@@ -1,13 +1,13 @@
 # model-runtime
 
-`model-runtime` is an initial, async-first invocation layer for applications that need to call
-LLMs without spreading provider SDK details through application code. It provides normalized
-messages, responses, streaming events, errors, routing, retries, timeouts, tracing hooks, and
-token accounting. Provider-specific request options and raw responses remain available, so the
-abstraction does not hide new provider capabilities.
+`model-runtime` is an initial, async-first and strictly typed invocation layer for applications
+that need to call LLMs without spreading provider SDK details through application code. It
+provides normalized messages, responses, streams, errors, routing, retries, timeouts, tracing
+hooks, and token accounting while retaining provider-specific JSON options and raw SDK payloads.
 
-The first built-in adapter uses OpenAI Chat Completions. The adapter contract is intentionally
-small enough for Anthropic, Google, or local inference adapters to be added independently.
+OpenAI Chat Completions is the first built-in integration. The provider lifecycle is implemented
+once through reusable transport, codec, stream-decoder, and error-mapping boundaries so another
+provider does not need to duplicate adapter orchestration.
 
 ## Setup
 
@@ -19,13 +19,13 @@ export OPENAI_API_KEY="your-key"
 export OPENAI_MODEL="your-openai-model-id"
 ```
 
-The OpenAI SDK reads `OPENAI_API_KEY` when no explicit key is supplied. Credentials and a custom
-base URL can instead be passed directly to `OpenAIAdapter`; the package does not use global
-configuration.
+The OpenAI SDK reads `OPENAI_API_KEY` when no explicit key is supplied. Credentials, organization,
+project, and a custom base URL can instead be passed to `OpenAIAdapter`. This package does not use
+global configuration of its own.
 
 ## Complete and streaming calls
 
-Save this as `example.py` and run it with `uv run python example.py`:
+The repository's [`example.py`](example.py) runs with `uv run python example.py`:
 
 ```python
 import asyncio
@@ -37,6 +37,7 @@ from model_runtime import (
     ModelRouter,
     ModelRuntime,
     OpenAIAdapter,
+    OpenAIProviderOptions,
     StreamEnd,
     TextDelta,
 )
@@ -48,14 +49,14 @@ runtime = ModelRuntime(router)
 
 
 async def main() -> None:
+    openai_options = OpenAIProviderOptions(seed=7)
     request = ModelRequest(
         messages=(
             Message.system("Answer clearly and briefly."),
             Message.user("Why is the sky blue?"),
         ),
         timeout=30,
-        # OpenAI-specific options pass through to the SDK unchanged.
-        provider_options={"seed": 7},
+        provider_options=openai_options,
     )
 
     response = await runtime.complete("chat", request)
@@ -73,38 +74,72 @@ asyncio.run(main())
 ```
 
 `runtime.total_usage` and `runtime.usage_by_model` contain process-local totals for successfully
-completed calls and streams. A stream is counted when its final `StreamEnd` is received.
+completed calls and streams. A stream is counted after its final `StreamEnd` is received.
 
 ## Architecture
 
-The application calls `ModelRuntime` with a logical model name. `ModelRouter` resolves that name
-to a `ChatModel` adapter and provider model ID. The runtime applies the request timeout, retries
-only normalized errors marked as retryable, notifies an optional `TraceObserver`, and records
-usage. The adapter translates the request and response at the SDK boundary.
+`ModelRuntime` receives a logical model name. `ModelRouter` resolves it to a `ChatModel` and the
+provider's model ID. The runtime owns request timeouts, retry policy, tracing notifications, and
+usage totals. Provider SDK retries stay disabled so there is one visible retry owner.
 
 ```text
-application -> ModelRuntime -> ModelRouter -> ChatModel adapter -> provider SDK
-                 |                |
+application -> ModelRuntime -> ModelRouter -> ChatModel / ProviderAdapter
+                 |                |                    |
+                 |                |                    +-- ProviderCodec + StreamDecoder
+                 |                |                    +-- ProviderErrorMapper
+                 |                |                    +-- ProviderTransport -> provider SDK
                  |                +-- logical name -> provider model ID
                  +-- retry / timeout / tracing / usage
 ```
 
-OpenAI SDK retries are disabled by `OpenAIAdapter`, leaving one predictable retry owner. The
-default `RetryPolicy` uses exponential backoff with jitter and honors a provider `Retry-After`
-header. Streaming calls are retried only before the first delta; retrying after output has been
-delivered could duplicate content or tool calls.
+The reusable provider components have focused responsibilities:
 
-The public error boundary consists of:
+| Component | Responsibility |
+| --- | --- |
+| `ProviderAdapter` | Common completion/stream lifecycle and normalized exception boundary |
+| `ProviderTransport` | Typed SDK invocation and transport stream cleanup |
+| `ProviderCodec` | Native request/response translation and per-stream decoder creation |
+| `StreamDecoder` | Stateful chunk normalization and construction of one terminal `StreamEnd` |
+| `ProviderErrorMapper` | Provider exception to `ModelRuntimeError` translation |
 
-- `AuthError`
-- `RateLimitError`
-- `RequestTimeout`
-- `InvalidRequestError`
-- `ContentFilterError`
-- `ProviderUnavailableError`
+`OpenAIAdapter` assembles `OpenAITransport`, `OpenAICodec`, `OpenAIStreamDecoder`, and the standard
+error mapper with OpenAI-specific metadata extraction. OpenAI request translation, networking,
+stream state, and exception inspection therefore have separate reasons to change.
 
-All inherit `ModelRuntimeError`, expose `retryable` and optional `retry_after`, and preserve the
-provider exception as `__cause__`.
+The default `RetryPolicy` uses exponential backoff with jitter and honors a provider
+`Retry-After` header. Streaming calls retry only before the first delta; retrying after output has
+been delivered could duplicate text or tool calls.
+
+## Strict payload typing
+
+The normalized library code does not expose `Any`:
+
+- Tool arguments, tool JSON Schemas, and provider options use recursive `JsonValue` and
+  `JsonObject` aliases.
+- `OpenAIProviderOptions` checks common OpenAI keys. Newly released fields can still pass through
+  its explicit JSON-typed `extra` mapping before the class is updated.
+- `ModelResponse.raw` and error details are `object | None` because the concrete value belongs to
+  the selected SDK. Unlike `Any`, `object` requires a caller to narrow or cast before access.
+- Flexible constructor sequences are normalized to canonical tuple attributes. Reading
+  `Message.content`, `ModelRequest.messages`, `ModelRequest.stop`, or `StreamEnd.usage` does not
+  retain a constructor-only union.
+
+Provider option mappings are copied into an immutable top-level view. Nested values remain
+unchanged so an adapter can pass provider payloads through without silently rewriting their
+representation. Values are validated as JSON-compatible when a request is constructed.
+
+Strict checking is enforced with BasedPyright in addition to Ruff's annotation rules. Explicit
+`Any`, inferred `Any`, unknown types, and unnecessary type-ignore comments fail the type check.
+
+## Errors
+
+The public taxonomy consists of `AuthError`, `RateLimitError`, `RequestTimeout`,
+`InvalidRequestError`, `ContentFilterError`, and `ProviderUnavailableError`. All inherit
+`ModelRuntimeError`, expose `retryable` and optional `retry_after`, and preserve the provider
+exception as `__cause__`.
+
+Providers with HTTP-like failures can reuse `StandardProviderErrorMapper`. They supply only an
+`ErrorMetadataExtractor` that reports typed status, retry, provider-code, and detail metadata.
 
 ## Routing and capabilities
 
@@ -119,77 +154,81 @@ if router.capabilities("fast").vision:
     ...
 ```
 
-An optional selector can map an application-level name to a registered route based on the full
-request:
+An optional selector can map an application-level name to a route using the complete request:
 
 ```python
-router = ModelRouter(selector=lambda name, request: "careful" if request.tools else "fast")
-```
-
-Policy belongs in that application-supplied callable; the router only stores and resolves routes.
-
-## Adding an adapter
-
-Implement the `ChatModel` protocol:
-
-```python
-from collections.abc import AsyncIterator
-
-from model_runtime import (
-    ModelCapabilities,
-    ModelRequest,
-    ModelResponse,
-    StreamEvent,
+router = ModelRouter(
+    selector=lambda name, request: "careful" if request.tools else "fast"
 )
-
-
-class MyAdapter:
-    capabilities = ModelCapabilities(tools=True, streaming=True)
-
-    async def complete(self, model_id: str, request: ModelRequest) -> ModelResponse: ...
-
-    async def stream(self, model_id: str, request: ModelRequest) -> AsyncIterator[StreamEvent]:
-        # Yield TextDelta/ToolCallDelta values and exactly one final StreamEnd.
-        ...
 ```
 
-An adapter is responsible only for translating normalized values, extracting usage, retaining the
-raw provider response, and mapping SDK failures to `ModelRuntimeError` subclasses. It should not
-perform its own retries. Unknown provider options are adapter-specific and pass through without
-filtering. `model`, `messages`, and `stream` are reserved because the adapter owns call identity
+Selection policy belongs in that application callable; the router only stores and resolves
+routes.
+
+## Adding a provider
+
+Implement the three small structural protocols and assemble `ProviderAdapter`; component classes
+do not need to inherit framework base classes:
+
+```python
+adapter = ProviderAdapter[NativeRequest, NativeResponse, NativeChunk](
+    transport=MyTransport(),
+    codec=MyCodec(),
+    error_mapper=MyErrorMapper(),
+    capabilities=ModelCapabilities(tools=True, streaming=True),
+)
+```
+
+`MyTransport.complete` accepts `NativeRequest` and returns `NativeResponse`; `stream` yields
+`NativeChunk` values and closes the SDK stream. `MyCodec` implements `encode_request`,
+`decode_response`, and `stream_decoder`. The decoder's `feed` method returns normalized deltas and
+its `finish` method returns one `StreamEnd`. `MyErrorMapper.translate` returns a normalized runtime
+error. The network-free [provider contract tests](tests/test_provider_adapter.py) are a concrete,
+executable example.
+
+Provider transports should not retry. Unknown options are interpreted only by the selected codec;
+for OpenAI, `model`, `messages`, and `stream` are reserved because the adapter owns request identity
 and invocation mode.
 
 ## Development
 
-Tests use fake adapters and SDK responses; they make no network calls.
+Tests use fake transports and official SDK response models; they make no network calls.
 
 ```bash
 uv sync
 uv run pytest
+uv run basedpyright
 uvx ruff check .
 uvx ruff format --check .
 ```
 
 ## Data handling and failure behavior
 
-Requests are sent directly to the provider selected by the router; this package does not persist
-prompt, response, credential, or trace data. An injected `TraceObserver` controls its own data
-handling. `ModelResponse.raw` and tracing callbacks may contain provider payloads, so applications
-should apply their own redaction and retention policies. Observer failures are isolated from model
-calls, while provider and adapter failures are surfaced through the normalized error taxonomy.
+Requests are sent directly to the provider selected by the router. This package does not persist
+prompts, responses, credentials, or traces. An injected `TraceObserver` controls its own data
+handling. `ModelResponse.raw`, error details, and tracing callbacks may contain provider payloads,
+so applications should apply their own redaction and retention policies. Observer failures are
+isolated from model calls, while provider failures cross the normalized error boundary.
 
 ## Project structure
 
 ```text
-src/model_runtime/        shared types, runtime, router, retry, and tracing contracts
-src/model_runtime/providers/openai.py
-tests/                    network-free runtime and adapter tests
+src/model_runtime/                     domain types, runtime, router, retry, and tracing
+src/model_runtime/providers/base.py    reusable typed provider orchestration and protocols
+src/model_runtime/providers/errors.py  shared provider error normalization
+src/model_runtime/providers/openai/    OpenAI adapter, transport, codec, stream, and errors
+tests/                                 network-free runtime and provider contract tests
+AGENTS.md                              Codex-native repository instructions
+.cursor/rules/                         Cursor-native repository instructions
 ```
 
 ## Current limitations
 
-- OpenAI is the only included provider, using the Chat Completions API.
+- OpenAI is the only included provider and uses Chat Completions.
+- OpenAI response normalization uses the first choice; additional `n` choices remain in `raw`.
+- Normalized OpenAI tool calls cover function tools; newer provider-specific tool forms remain in
+  `raw` until normalized types support them.
 - Usage totals are in memory and reset when the process exits.
 - The normalized image part accepts URLs and data URLs; file loading is left to the application.
 - Provider-specific response fields are available through `ModelResponse.raw`, not normalized.
-- An injected OpenAI client is assumed to have its own SDK retries disabled.
+- An injected OpenAI-compatible client is assumed to have its own SDK retries disabled.

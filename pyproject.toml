@@ -12,8 +12,9 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
+    "basedpyright>=1.31.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
 ]
@@ -22,6 +23,18 @@ dev = [
 addopts = "-ra"
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.basedpyright]
+include = ["src", "tests", "example.py"]
+pythonVersion = "3.14"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "strict"
+reportAny = "error"
+reportExplicitAny = "error"
+reportImplicitOverride = "error"
+reportUnnecessaryIsInstance = "none"
+reportUnnecessaryTypeIgnoreComment = "error"
 
 [tool.ruff]
 line-length = 88
@@ -47,4 +60,3 @@ convention = "numpy"
 quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
-

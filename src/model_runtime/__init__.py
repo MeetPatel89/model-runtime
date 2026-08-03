@@ -9,8 +9,22 @@ from .errors import (
     RateLimitError,
     RequestTimeout,
 )
+from .json_types import JsonObject, JsonPrimitive, JsonValue
 from .model import ChatModel
-from .providers import OpenAIAdapter
+from .providers import (
+    ErrorMetadataExtractor,
+    OpenAIAdapter,
+    OpenAIProviderOptions,
+    ProviderAdapter,
+    ProviderCodec,
+    ProviderErrorKind,
+    ProviderErrorMapper,
+    ProviderErrorMetadata,
+    ProviderTransport,
+    StandardProviderErrorMapper,
+    StreamDecoder,
+    StreamDelta,
+)
 from .retry import RetryPolicy
 from .router import ModelRoute, ModelRouter, RouteSelector
 from .runtime import ModelRuntime
@@ -45,6 +59,9 @@ __all__ = [
     "ImageContent",
     "ImagePart",
     "InvalidRequestError",
+    "JsonObject",
+    "JsonPrimitive",
+    "JsonValue",
     "Message",
     "MessageRole",
     "ModelCapabilities",
@@ -56,12 +73,21 @@ __all__ = [
     "ModelRuntimeError",
     "NoOpTraceObserver",
     "OpenAIAdapter",
+    "OpenAIProviderOptions",
+    "ProviderAdapter",
+    "ProviderCodec",
+    "ProviderErrorKind",
+    "ProviderErrorMapper",
+    "ProviderErrorMetadata",
     "ProviderUnavailableError",
+    "ProviderTransport",
     "RateLimitError",
     "RequestTimeout",
     "RetryPolicy",
     "RouteSelector",
     "StreamEnd",
+    "StreamDecoder",
+    "StreamDelta",
     "StreamEvent",
     "TextContent",
     "TextDelta",
@@ -71,4 +97,6 @@ __all__ = [
     "ToolDefinition",
     "TraceObserver",
     "Usage",
+    "ErrorMetadataExtractor",
+    "StandardProviderErrorMapper",
 ]

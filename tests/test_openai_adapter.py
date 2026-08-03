@@ -1,14 +1,13 @@
-"""Tests for the OpenAI Chat Completions adapter."""
+"""Tests for the typed OpenAI Chat Completions components."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
+from dataclasses import dataclass
 
 import httpx
 import openai
 import pytest
-from openai.types.chat import ChatCompletionChunk
+from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
 from model_runtime import (
     AuthError,
@@ -18,7 +17,9 @@ from model_runtime import (
     InvalidRequestError,
     Message,
     ModelRequest,
+    ModelRuntimeError,
     OpenAIAdapter,
+    OpenAIProviderOptions,
     RateLimitError,
     StreamEnd,
     TextDelta,
@@ -27,36 +28,93 @@ from model_runtime import (
     ToolDefinition,
     Usage,
 )
+from model_runtime.providers.openai.transport import (
+    OpenAICreateResult,
+)
 
 
 class FakeCompletions:
-    """Minimal async completion endpoint used by adapter tests."""
+    """Minimal typed completion endpoint used by adapter tests."""
 
-    def __init__(self, result: Any) -> None:
+    def __init__(self, result: OpenAICreateResult) -> None:
         self.result = result
-        self.calls: list[dict[str, Any]] = []
+        self.calls: list[dict[str, object]] = []
 
-    async def create(self, **kwargs: Any) -> Any:
+    async def create(self, **kwargs: object) -> OpenAICreateResult:
         """Record request arguments and return the configured result."""
         self.calls.append(kwargs)
         return self.result
 
 
-def fake_client(result: Any) -> tuple[Any, FakeCompletions]:
-    """Return an SDK-shaped client and its recording completion endpoint."""
+class FakeChat:
+    """Minimal typed chat resource."""
+
+    def __init__(self, completions: FakeCompletions) -> None:
+        self.completions = completions
+
+
+class FakeClient:
+    """Structurally compatible OpenAI client for offline tests."""
+
+    def __init__(self, completions: FakeCompletions) -> None:
+        self.chat = FakeChat(completions)
+
+
+def fake_client(
+    result: OpenAICreateResult,
+) -> tuple[FakeClient, FakeCompletions]:
+    """Return a typed SDK-shaped client and its recording endpoint."""
     completions = FakeCompletions(result)
-    return SimpleNamespace(chat=SimpleNamespace(completions=completions)), completions
+    return FakeClient(completions), completions
+
+
+def chat_completion() -> ChatCompletion:
+    """Build a typed completion with text, a tool call, and token usage."""
+    return ChatCompletion.model_validate(
+        {
+            "id": "completion-1",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "gpt-test-2026",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "Let me check.",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "weather",
+                                    "arguments": '{"city":"Boston"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 4,
+                "total_tokens": 14,
+                "prompt_tokens_details": {"cached_tokens": 3},
+            },
+        }
+    )
 
 
 def test_constructs_sdk_client_with_retries_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Constructed SDK clients disable their own retry policy."""
-    created = object()
-    options: dict[str, Any] = {}
+    created, _ = fake_client(chat_completion())
+    options: dict[str, object] = {}
 
-    def make_client(**kwargs: Any) -> object:
-        """Capture SDK client options and return a sentinel client."""
+    def make_client(**kwargs: object) -> FakeClient:
+        """Capture SDK client options and return a typed fake client."""
         options.update(kwargs)
         return created
 
@@ -79,36 +137,29 @@ def test_constructs_sdk_client_with_retries_disabled(
     }
 
 
+def test_openai_provider_options_are_typed_and_forward_compatible() -> None:
+    """Known keys and explicit future JSON keys share one read-only mapping."""
+    options = OpenAIProviderOptions(
+        seed=7,
+        reasoning_effort="high",
+        extra={"future_option": {"enabled": True}},
+    )
+
+    assert dict(options) == {
+        "seed": 7,
+        "reasoning_effort": "high",
+        "future_option": {"enabled": True},
+    }
+    with pytest.raises(ValueError, match="both extra and a named field"):
+        OpenAIProviderOptions(seed=7, extra={"seed": 8})
+
+
 @pytest.mark.asyncio
 async def test_complete_translates_request_response_tools_and_provider_options() -> (
     None
 ):
     """Completion calls translate normalized fields in both directions."""
-    raw_response = {
-        "model": "gpt-test-2026",
-        "choices": [
-            {
-                "finish_reason": "tool_calls",
-                "message": {
-                    "content": "Let me check.",
-                    "tool_calls": [
-                        {
-                            "id": "call-1",
-                            "function": {
-                                "name": "weather",
-                                "arguments": '{"city":"Boston"}',
-                            },
-                        }
-                    ],
-                },
-            }
-        ],
-        "usage": {
-            "prompt_tokens": 10,
-            "completion_tokens": 4,
-            "prompt_tokens_details": {"cached_tokens": 3},
-        },
-    }
+    raw_response = chat_completion()
     client, completions = fake_client(raw_response)
     adapter = OpenAIAdapter(client=client)
     request = ModelRequest(
@@ -129,7 +180,7 @@ async def test_complete_translates_request_response_tools_and_provider_options()
         ),
         temperature=0.2,
         max_output_tokens=100,
-        provider_options={"seed": 7, "reasoning_effort": "low"},
+        provider_options=OpenAIProviderOptions(seed=7, reasoning_effort="low"),
     )
 
     response = await adapter.complete("gpt-test", request)
@@ -137,26 +188,37 @@ async def test_complete_translates_request_response_tools_and_provider_options()
     sent = completions.calls[0]
     assert sent["model"] == "gpt-test"
     assert sent["stream"] is False
-    assert sent["messages"][0] == {"role": "system", "content": "Be concise."}
-    assert sent["messages"][1]["content"][1] == {
-        "type": "image_url",
-        "image_url": {"url": "https://example.com/image.png", "detail": "auto"},
-    }
-    assert sent["tools"][0]["function"]["strict"] is True
+    assert sent["messages"] == (
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": (
+                {"type": "text", "text": "What is here?"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://example.com/image.png",
+                        "detail": "auto",
+                    },
+                },
+            ),
+        },
+    )
     assert sent["max_completion_tokens"] == 100
     assert sent["seed"] == 7
     assert sent["reasoning_effort"] == "low"
     assert response.raw is raw_response
     assert response.finish_reason is FinishReason.TOOL_CALLS
     assert response.text == "Let me check."
+    assert not isinstance(response.tool_calls[0].arguments, str)
     assert response.tool_calls[0].arguments["city"] == "Boston"
     assert response.usage == Usage(10, 4, 3)
 
 
 class FakeStream:
-    """Finite async iterable that records whether it was closed."""
+    """Finite typed async iterable that records whether it was closed."""
 
-    def __init__(self, chunks: list[Any]) -> None:
+    def __init__(self, chunks: list[ChatCompletionChunk]) -> None:
         self._chunks = iter(chunks)
         self.closed = False
 
@@ -164,14 +226,14 @@ class FakeStream:
         """Return this asynchronous iterator."""
         return self
 
-    async def __anext__(self) -> Any:
+    async def __anext__(self) -> ChatCompletionChunk:
         """Return the next configured chunk or stop iteration."""
         try:
             return next(self._chunks)
         except StopIteration:
             raise StopAsyncIteration from None
 
-    async def aclose(self) -> None:
+    async def close(self) -> None:
         """Record that the stream has been closed."""
         self.closed = True
 
@@ -179,7 +241,7 @@ class FakeStream:
 @pytest.mark.asyncio
 async def test_stream_reconstructs_response_and_collects_usage() -> None:
     """Streams reconstruct the final response and collect terminal usage."""
-    common = {
+    common: dict[str, object] = {
         "id": "chunk-1",
         "object": "chat.completion.chunk",
         "created": 1,
@@ -260,11 +322,19 @@ async def test_stream_reconstructs_response_and_collects_usage() -> None:
     end = events[-1]
     assert isinstance(end, StreamEnd)
     assert end.response.text == "The answer"
+    assert not isinstance(end.response.tool_calls[0].arguments, str)
     assert end.response.tool_calls[0].arguments["city"] == "Boston"
     assert end.response.finish_reason is FinishReason.TOOL_CALLS
     assert end.usage == Usage(8, 5)
     assert completions.calls[0]["stream_options"] == {"include_usage": True}
     assert stream.closed
+
+
+@dataclass(frozen=True, slots=True)
+class FakeHTTPResponse:
+    """HTTP response shape inspected by the error extractor."""
+
+    headers: dict[str, str]
 
 
 class StatusError(Exception):
@@ -275,13 +345,13 @@ class StatusError(Exception):
         message: str,
         status_code: int,
         *,
-        body: Any = None,
+        body: object | None = None,
         headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.body = body
-        self.response = SimpleNamespace(headers=headers or {})
+        self.response = FakeHTTPResponse(headers or {})
 
 
 @pytest.mark.parametrize(
@@ -296,7 +366,10 @@ class StatusError(Exception):
         ),
     ],
 )
-def test_error_mapping(source: StatusError, expected: type[Exception]) -> None:
+def test_error_mapping(
+    source: StatusError,
+    expected: type[ModelRuntimeError],
+) -> None:
     """SDK-shaped errors map to the corresponding public exception type."""
     mapped = OpenAIAdapter.translate_error(source)
     assert isinstance(mapped, expected)

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 
 class ModelRuntimeError(Exception):
     """Base class for all model invocation failures."""
@@ -19,7 +17,7 @@ class ModelRuntimeError(Exception):
         cause: BaseException | None = None,
         status_code: int | None = None,
         provider: str | None = None,
-        details: Any = None,
+        details: object | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = self.default_retryable if retryable is None else retryable
@@ -42,7 +40,7 @@ class RateLimitError(ModelRuntimeError):
     default_retryable = True
 
 
-class RequestTimeout(ModelRuntimeError):
+class RequestTimeout(ModelRuntimeError):  # noqa: N818 - public taxonomy name
     """The provider call exceeded its configured timeout."""
 
     default_retryable = True

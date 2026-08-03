@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from typing import cast, override
 
 import pytest
 
 from model_runtime import (
+    ChatModel,
     FinishReason,
     InvalidRequestError,
     Message,
@@ -16,11 +18,14 @@ from model_runtime import (
     ModelResponse,
     ModelRouter,
     ModelRuntime,
+    ModelRuntimeError,
     RateLimitError,
     RequestTimeout,
     RetryPolicy,
     StreamEnd,
+    StreamEvent,
     TextDelta,
+    TraceObserver,
     Usage,
 )
 
@@ -41,7 +46,7 @@ class FakeModel:
 
     capabilities = ModelCapabilities(tools=True)
 
-    def __init__(self, outcomes: list[ModelResponse | BaseException]) -> None:
+    def __init__(self, outcomes: list[ModelResponse | Exception]) -> None:
         self.outcomes = outcomes
         self.calls = 0
 
@@ -49,13 +54,13 @@ class FakeModel:
         """Return or raise the next configured outcome."""
         outcome = self.outcomes[self.calls]
         self.calls += 1
-        if isinstance(outcome, BaseException):
+        if isinstance(outcome, Exception):
             raise outcome
         return outcome
 
     async def stream(
         self, model_id: str, request: ModelRequest
-    ) -> AsyncIterator[object]:
+    ) -> AsyncIterator[StreamEvent]:
         """Reject streaming because this fake only serves completions."""
         raise NotImplementedError
         yield  # pragma: no cover
@@ -67,7 +72,7 @@ class Recorder:
     def __init__(self) -> None:
         self.requests: list[str] = []
         self.responses: list[tuple[str, Usage]] = []
-        self.errors: list[tuple[str, BaseException]] = []
+        self.errors: list[tuple[str, ModelRuntimeError]] = []
 
     def on_request(self, model_id: str, request: ModelRequest) -> None:
         """Record the requested model ID."""
@@ -76,7 +81,7 @@ class Recorder:
     async def on_response(
         self,
         model_id: str,
-        result: ModelResponse,
+        response: ModelResponse,
         latency_seconds: float,
         usage: Usage,
     ) -> None:
@@ -85,16 +90,27 @@ class Recorder:
         self.responses.append((model_id, usage))
 
     def on_error(
-        self, model_id: str, error: BaseException, latency_seconds: float
+        self, model_id: str, error: ModelRuntimeError, latency_seconds: float
     ) -> None:
         """Record a terminal error for its model ID."""
         self.errors.append((model_id, error))
 
 
-def make_runtime(model: object, **kwargs: object) -> ModelRuntime:
+def make_runtime(
+    model: ChatModel,
+    *,
+    retry_policy: RetryPolicy | None = None,
+    observer: TraceObserver | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> ModelRuntime:
     """Create a runtime with one fake chat route."""
-    router = ModelRouter({"chat": (model, "provider-model")})  # type: ignore[arg-type]
-    return ModelRuntime(router, **kwargs)  # type: ignore[arg-type]
+    router = ModelRouter({"chat": (model, "provider-model")})
+    return ModelRuntime(
+        router,
+        retry_policy=retry_policy,
+        observer=observer,
+        sleep=sleep,
+    )
 
 
 @pytest.mark.asyncio
@@ -133,6 +149,7 @@ async def test_complete_normalizes_timeout_and_unknown_route() -> None:
     class SlowModel(FakeModel):
         """Fake model whose completion never returns."""
 
+        @override
         async def complete(self, model_id: str, request: ModelRequest) -> ModelResponse:
             """Wait indefinitely so the runtime timeout fires."""
             await asyncio.Event().wait()
@@ -164,7 +181,7 @@ class RetryingStreamModel:
 
     async def stream(
         self, model_id: str, request: ModelRequest
-    ) -> AsyncIterator[object]:
+    ) -> AsyncIterator[StreamEvent]:
         """Fail once, then yield a delta and a final event."""
         self.calls += 1
         if self.calls == 1:
@@ -199,9 +216,10 @@ async def test_stream_does_not_retry_after_a_delta() -> None:
     class BrokenStream(RetryingStreamModel):
         """Fake stream that fails after emitting a partial delta."""
 
+        @override
         async def stream(
             self, model_id: str, request: ModelRequest
-        ) -> AsyncIterator[object]:
+        ) -> AsyncIterator[StreamEvent]:
             """Yield a partial delta and then a retryable error."""
             self.calls += 1
             yield TextDelta("partial")
@@ -224,9 +242,10 @@ async def test_stream_can_be_closed_early_without_reporting_an_error() -> None:
     class OpenStream(RetryingStreamModel):
         """Fake stream that remains open after a partial delta."""
 
+        @override
         async def stream(
             self, model_id: str, request: ModelRequest
-        ) -> AsyncIterator[object]:
+        ) -> AsyncIterator[StreamEvent]:
             """Yield a delta and wait until the caller closes the stream."""
             self.calls += 1
             yield TextDelta("partial")
@@ -235,7 +254,10 @@ async def test_stream_can_be_closed_early_without_reporting_an_error() -> None:
     model = OpenStream()
     observer = Recorder()
     runtime = make_runtime(model, observer=observer)
-    iterator = runtime.stream("chat", ModelRequest.from_text("hi"))
+    iterator = cast(
+        AsyncGenerator[StreamEvent, None],
+        runtime.stream("chat", ModelRequest.from_text("hi")),
+    )
 
     assert await anext(iterator) == TextDelta("partial")
     await iterator.aclose()

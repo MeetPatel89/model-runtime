@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from types import MappingProxyType
-from typing import Any
+from typing import ParamSpec, Protocol, TypeVar, runtime_checkable
 
 from .errors import (
     InvalidRequestError,
@@ -17,7 +16,7 @@ from .errors import (
 )
 from .retry import RetryPolicy
 from .router import ModelRoute, ModelRouter
-from .tracing import NoOpTraceObserver, TraceObserver
+from .tracing import NoOpTraceObserver, ObserverResult, TraceObserver
 from .types import (
     ModelRequest,
     ModelResponse,
@@ -30,6 +29,17 @@ from .types import (
 
 Sleep = Callable[[float], Awaitable[None]]
 Clock = Callable[[], float]
+T = TypeVar("T")
+P = ParamSpec("P")
+
+
+@runtime_checkable
+class _AsyncClosable(Protocol):
+    """Optional cleanup behavior implemented by async generators."""
+
+    async def aclose(self) -> None:
+        """Close the iterator and release its resources."""
+        ...
 
 
 class ModelRuntime:
@@ -75,7 +85,7 @@ class ModelRuntime:
         """Complete a request with routing, retries, tracing, and accounting."""
         route = self._resolve(model, request)
         started = self._clock()
-        await self._observe("on_request", route.model_id, request)
+        await self._observe(self.observer.on_request, route.model_id, request)
 
         attempt = 0
         while True:
@@ -93,29 +103,22 @@ class ModelRuntime:
                         provider=route.model_id,
                         details=response,
                     )
-            except BaseException as exc:
-                if isinstance(
-                    exc,
-                    (
-                        KeyboardInterrupt,
-                        SystemExit,
-                        GeneratorExit,
-                        asyncio.CancelledError,
-                    ),
-                ):
-                    raise
+            except Exception as exc:
                 error = self._normalize_error(exc, route.model_id)
                 if self.retry_policy.should_retry(error, attempt):
                     await self._sleep(self.retry_policy.delay_for(attempt, error))
                     continue
                 await self._observe(
-                    "on_error", route.model_id, error, self._clock() - started
+                    self.observer.on_error,
+                    route.model_id,
+                    error,
+                    self._clock() - started,
                 )
                 raise error
 
             self._record_usage(route.model_id, response.usage)
             await self._observe(
-                "on_response",
+                self.observer.on_response,
                 route.model_id,
                 response,
                 self._clock() - started,
@@ -129,7 +132,7 @@ class ModelRuntime:
         """Stream a request with retries before the first delta and final accounting."""
         route = self._resolve(model, request)
         started = self._clock()
-        await self._observe("on_request", route.model_id, request)
+        await self._observe(self.observer.on_request, route.model_id, request)
 
         attempt = 0
         emitted_delta = False
@@ -138,10 +141,6 @@ class ModelRuntime:
             iterator: AsyncIterator[StreamEvent] | None = None
             try:
                 stream = route.adapter.stream(route.model_id, request)
-                if inspect.isawaitable(stream):
-                    stream = await self._with_timeout(
-                        stream, request.timeout, route.model_id
-                    )
                 iterator = stream.__aiter__()
 
                 while True:
@@ -168,10 +167,10 @@ class ModelRuntime:
                             details=event,
                         )
 
-                    usage = event.usage or event.response.usage
+                    usage = event.usage
                     self._record_usage(route.model_id, usage)
                     await self._observe(
-                        "on_response",
+                        self.observer.on_response,
                         route.model_id,
                         event.response,
                         self._clock() - started,
@@ -179,17 +178,7 @@ class ModelRuntime:
                     )
                     yield event
                     return
-            except BaseException as exc:
-                if isinstance(
-                    exc,
-                    (
-                        KeyboardInterrupt,
-                        SystemExit,
-                        GeneratorExit,
-                        asyncio.CancelledError,
-                    ),
-                ):
-                    raise
+            except Exception as exc:
                 error = self._normalize_error(exc, route.model_id)
                 can_retry = not emitted_delta and self.retry_policy.should_retry(
                     error, attempt
@@ -199,7 +188,10 @@ class ModelRuntime:
                     await self._sleep(self.retry_policy.delay_for(attempt, error))
                     continue
                 await self._observe(
-                    "on_error", route.model_id, error, self._clock() - started
+                    self.observer.on_error,
+                    route.model_id,
+                    error,
+                    self._clock() - started,
                 )
                 raise error
             finally:
@@ -215,10 +207,10 @@ class ModelRuntime:
 
     async def _with_timeout(
         self,
-        value: Awaitable[Any],
+        value: Awaitable[T],
         timeout: float | None,
         model_id: str,
-    ) -> Any:
+    ) -> T:
         try:
             if timeout is None:
                 return await value
@@ -245,10 +237,15 @@ class ModelRuntime:
             provider=model_id,
         )
 
-    async def _observe(self, method_name: str, *args: Any) -> None:
+    async def _observe(
+        self,
+        callback: Callable[P, ObserverResult],
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> None:
         try:
-            result = getattr(self.observer, method_name)(*args)
-            if inspect.isawaitable(result):
+            result = callback(*args, **kwargs)
+            if result is not None:
                 await result
         except Exception:  # noqa: BLE001 - observers are an isolated extension point
             # Instrumentation must not turn a successful provider call into a failure.
@@ -264,9 +261,8 @@ class ModelRuntime:
     async def _close(iterator: AsyncIterator[StreamEvent] | None) -> None:
         if iterator is None:
             return
-        close = getattr(iterator, "aclose", None)
-        if close is not None:
+        if isinstance(iterator, _AsyncClosable):
             try:
-                await close()
+                await iterator.aclose()
             except Exception:  # noqa: BLE001 - best-effort cleanup must preserve the call error
                 return

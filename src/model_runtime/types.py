@@ -6,13 +6,14 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from types import MappingProxyType
-from typing import Any, Literal
+from typing import Literal
+
+from .json_types import JsonObject, immutable_json_object
 
 
-def _immutable_mapping(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    """Return a shallow, immutable copy without changing nested provider values."""
-    return MappingProxyType(dict(value or {}))
+def _empty_json_object() -> JsonObject:
+    """Return a precisely typed empty JSON object for dataclass defaults."""
+    return {}
 
 
 class MessageRole(str, Enum):
@@ -71,12 +72,12 @@ class ToolCall:
 
     id: str
     name: str
-    arguments: Mapping[str, Any] | str = field(default_factory=dict)
+    arguments: JsonObject | str = field(default_factory=_empty_json_object)
 
     def __post_init__(self) -> None:
         """Freeze mapping arguments while accepting JSON strings unchanged."""
         if isinstance(self.arguments, Mapping):
-            object.__setattr__(self, "arguments", _immutable_mapping(self.arguments))
+            object.__setattr__(self, "arguments", immutable_json_object(self.arguments))
         elif not isinstance(self.arguments, str):
             raise TypeError("tool call arguments must be a mapping or JSON string")
 
@@ -90,43 +91,52 @@ class ToolCall:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class Message:
     """A chat message made up of typed content parts."""
 
-    role: MessageRole | str
-    content: tuple[ContentPart, ...] | Sequence[ContentPart] | str = ()
-    tool_calls: tuple[ToolCall, ...] | Sequence[ToolCall] = ()
+    role: MessageRole
+    content: tuple[ContentPart, ...]
+    tool_calls: tuple[ToolCall, ...]
     tool_call_id: str | None = None
     name: str | None = None
 
-    def __post_init__(self) -> None:
-        """Normalize role, content, and tool calls to immutable value objects."""
+    def __init__(
+        self,
+        role: MessageRole | str,
+        content: Sequence[ContentPart] | str = (),
+        tool_calls: Sequence[ToolCall] = (),
+        tool_call_id: str | None = None,
+        name: str | None = None,
+    ) -> None:
+        """Normalize flexible inputs into canonical immutable attributes."""
         try:
-            role = (
-                self.role
-                if isinstance(self.role, MessageRole)
-                else MessageRole(self.role)
+            normalized_role = (
+                role if isinstance(role, MessageRole) else MessageRole(role)
             )
         except ValueError as exc:
-            allowed = ", ".join(role.value for role in MessageRole)
+            allowed = ", ".join(member.value for member in MessageRole)
             raise ValueError(
-                f"unsupported message role {self.role!r}; expected one of {allowed}"
+                f"unsupported message role {role!r}; expected one of {allowed}"
             ) from exc
 
-        if isinstance(self.content, str):
-            content: tuple[ContentPart, ...] = (TextPart(self.content),)
+        if isinstance(content, str):
+            normalized_content: tuple[ContentPart, ...] = (TextPart(content),)
         else:
-            content = tuple(self.content)
-        if not all(isinstance(part, (TextPart, ImagePart)) for part in content):
+            normalized_content = tuple(content)
+        if not all(
+            isinstance(part, TextPart | ImagePart) for part in normalized_content
+        ):
             raise TypeError("message content must contain TextPart or ImagePart values")
 
-        object.__setattr__(self, "role", role)
-        object.__setattr__(self, "content", content)
-        tool_calls = tuple(self.tool_calls)
-        if not all(isinstance(call, ToolCall) for call in tool_calls):
+        normalized_tool_calls = tuple(tool_calls)
+        if not all(isinstance(call, ToolCall) for call in normalized_tool_calls):
             raise TypeError("message tool_calls must contain ToolCall values")
-        object.__setattr__(self, "tool_calls", tool_calls)
+        object.__setattr__(self, "role", normalized_role)
+        object.__setattr__(self, "content", normalized_content)
+        object.__setattr__(self, "tool_calls", normalized_tool_calls)
+        object.__setattr__(self, "tool_call_id", tool_call_id)
+        object.__setattr__(self, "name", name)
 
     @classmethod
     def system(cls, text: str) -> Message:
@@ -171,17 +181,17 @@ class ToolDefinition:
 
     name: str
     description: str | None = None
-    parameters: Mapping[str, Any] = field(default_factory=dict)
+    parameters: JsonObject = field(default_factory=_empty_json_object)
     strict: bool | None = None
 
     def __post_init__(self) -> None:
         """Validate the tool name and freeze its parameter schema."""
         if not self.name:
             raise ValueError("tool name cannot be empty")
-        object.__setattr__(self, "parameters", _immutable_mapping(self.parameters))
+        object.__setattr__(self, "parameters", immutable_json_object(self.parameters))
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class ModelRequest:
     """A normalized request accepted by every chat-model adapter.
 
@@ -189,40 +199,72 @@ class ModelRequest:
     selected adapter unchanged, allowing provider features to be used immediately.
     """
 
-    messages: tuple[Message, ...] | Sequence[Message]
-    tools: tuple[ToolDefinition, ...] | Sequence[ToolDefinition] = ()
-    temperature: float | None = None
-    max_output_tokens: int | None = None
-    stop: tuple[str, ...] | Sequence[str] | str = ()
-    timeout: float | None = None
-    provider_options: Mapping[str, Any] = field(default_factory=dict)
+    messages: tuple[Message, ...]
+    tools: tuple[ToolDefinition, ...]
+    temperature: float | None
+    max_output_tokens: int | None
+    stop: tuple[str, ...]
+    timeout: float | None
+    provider_options: JsonObject
 
-    def __post_init__(self) -> None:
-        """Validate and normalize request collections and provider options."""
-        if self.timeout is not None and self.timeout <= 0:
+    def __init__(
+        self,
+        messages: Sequence[Message],
+        tools: Sequence[ToolDefinition] = (),
+        temperature: float | None = None,
+        max_output_tokens: int | None = None,
+        stop: Sequence[str] | str = (),
+        timeout: float | None = None,
+        provider_options: JsonObject | None = None,
+    ) -> None:
+        """Validate inputs and store one canonical immutable representation."""
+        if timeout is not None and timeout <= 0:
             raise ValueError("timeout must be greater than zero")
-        if self.max_output_tokens is not None and self.max_output_tokens <= 0:
+        if max_output_tokens is not None and max_output_tokens <= 0:
             raise ValueError("max_output_tokens must be greater than zero")
-        messages = tuple(self.messages)
-        tools = tuple(self.tools)
-        if not all(isinstance(message, Message) for message in messages):
+        normalized_messages = tuple(messages)
+        normalized_tools = tuple(tools)
+        if not all(isinstance(message, Message) for message in normalized_messages):
             raise TypeError("messages must contain Message values")
-        if not all(isinstance(tool, ToolDefinition) for tool in tools):
+        if not all(isinstance(tool, ToolDefinition) for tool in normalized_tools):
             raise TypeError("tools must contain ToolDefinition values")
-        stop = (self.stop,) if isinstance(self.stop, str) else tuple(self.stop)
-        if not all(isinstance(item, str) for item in stop):
+        normalized_stop = (stop,) if isinstance(stop, str) else tuple(stop)
+        if not all(isinstance(item, str) for item in normalized_stop):
             raise TypeError("stop must contain strings")
-        object.__setattr__(self, "messages", messages)
-        object.__setattr__(self, "tools", tools)
-        object.__setattr__(self, "stop", stop)
+        object.__setattr__(self, "messages", normalized_messages)
+        object.__setattr__(self, "tools", normalized_tools)
+        object.__setattr__(self, "temperature", temperature)
+        object.__setattr__(self, "max_output_tokens", max_output_tokens)
+        object.__setattr__(self, "stop", normalized_stop)
+        object.__setattr__(self, "timeout", timeout)
         object.__setattr__(
-            self, "provider_options", _immutable_mapping(self.provider_options)
+            self,
+            "provider_options",
+            immutable_json_object(provider_options),
         )
 
     @classmethod
-    def from_text(cls, text: str, **kwargs: Any) -> ModelRequest:
+    def from_text(
+        cls,
+        text: str,
+        *,
+        tools: Sequence[ToolDefinition] = (),
+        temperature: float | None = None,
+        max_output_tokens: int | None = None,
+        stop: Sequence[str] | str = (),
+        timeout: float | None = None,
+        provider_options: JsonObject | None = None,
+    ) -> ModelRequest:
         """Create a request with one user message containing ``text``."""
-        return cls(messages=(Message.user(text),), **kwargs)
+        return cls(
+            messages=(Message.user(text),),
+            tools=tools,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            stop=stop,
+            timeout=timeout,
+            provider_options=provider_options or {},
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,18 +315,8 @@ class ModelResponse:
     message: Message
     usage: Usage = field(default_factory=Usage)
     finish_reason: FinishReason = FinishReason.UNKNOWN
-    raw: Any = None
+    raw: object | None = None
     model: str | None = None
-
-    def __post_init__(self) -> None:
-        """Normalize unknown finish-reason strings to ``UNKNOWN``."""
-        if not isinstance(self.finish_reason, FinishReason):
-            try:
-                object.__setattr__(
-                    self, "finish_reason", FinishReason(self.finish_reason)
-                )
-            except ValueError:
-                object.__setattr__(self, "finish_reason", FinishReason.UNKNOWN)
 
     @property
     def text(self) -> str:
@@ -329,17 +361,17 @@ class ToolCallDelta:
         return self.arguments_delta
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class StreamEnd:
     """The final event of a stream, including its assembled response."""
 
     response: ModelResponse
-    usage: Usage | None = None
+    usage: Usage
 
-    def __post_init__(self) -> None:
-        """Use the response usage when the stream did not provide one separately."""
-        if self.usage is None:
-            object.__setattr__(self, "usage", self.response.usage)
+    def __init__(self, response: ModelResponse, usage: Usage | None = None) -> None:
+        """Store explicit usage or the final response's canonical usage."""
+        object.__setattr__(self, "response", response)
+        object.__setattr__(self, "usage", response.usage if usage is None else usage)
 
     @property
     def final_response(self) -> ModelResponse:

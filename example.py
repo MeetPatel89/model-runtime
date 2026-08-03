@@ -9,6 +9,7 @@ from model_runtime import (
     ModelRouter,
     ModelRuntime,
     OpenAIAdapter,
+    OpenAIProviderOptions,
     StreamEnd,
     TextDelta,
 )
@@ -20,6 +21,7 @@ runtime = ModelRuntime(router)
 
 async def main() -> None:
     """Run a completion and a stream against the configured OpenAI model."""
+    openai_options = OpenAIProviderOptions(seed=7)
     request = ModelRequest(
         messages=(
             Message.system("Answer clearly and briefly."),
@@ -27,7 +29,7 @@ async def main() -> None:
         ),
         timeout=30,
         # OpenAI-specific options pass through to the SDK unchanged.
-        provider_options={"seed": 7},
+        provider_options=openai_options,
     )
 
     response = await runtime.complete("chat", request)

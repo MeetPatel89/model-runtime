@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, MutableMapping
 from dataclasses import FrozenInstanceError
+from typing import cast
 
 import pytest
 
 from model_runtime import (
+    JsonObject,
+    JsonValue,
     Message,
     ModelCapabilities,
     ModelRequest,
+    ModelResponse,
     ModelRouter,
     RateLimitError,
     RetryPolicy,
+    StreamEvent,
     TextPart,
     ToolCall,
     ToolDefinition,
@@ -24,6 +30,19 @@ class StubModel:
     """Minimal model exposing capabilities for router tests."""
 
     capabilities = ModelCapabilities(tools=True, max_context_tokens=1234)
+
+    async def complete(self, model_id: str, request: ModelRequest) -> ModelResponse:
+        """Reject calls because router tests only inspect identity and metadata."""
+        raise NotImplementedError
+
+    async def stream(
+        self,
+        model_id: str,
+        request: ModelRequest,
+    ) -> AsyncIterator[StreamEvent]:
+        """Reject calls because router tests only inspect identity and metadata."""
+        raise NotImplementedError
+        yield  # pragma: no cover
 
 
 def test_value_objects_normalize_sequences_and_are_immutable() -> None:
@@ -40,10 +59,14 @@ def test_value_objects_normalize_sequences_and_are_immutable() -> None:
     assert request.messages[0].content == (TextPart("hello"),)
     assert request.messages[0].text == "hello"
     assert request.provider_options["reasoning_effort"] == "high"
+    mutable_options = cast(
+        MutableMapping[str, JsonValue],
+        request.provider_options,
+    )
     with pytest.raises(TypeError):
-        request.provider_options["seed"] = 42  # type: ignore[index]
+        mutable_options["seed"] = 42
     with pytest.raises(FrozenInstanceError):
-        request.timeout = 1  # type: ignore[misc]
+        setattr(request, "timeout", 1)
 
 
 def test_tool_arguments_and_usage_helpers() -> None:
@@ -52,6 +75,16 @@ def test_tool_arguments_and_usage_helpers() -> None:
     assert call.arguments_json == '{"city":"Boston"}'
     assert Usage(2, 3, 1).total_tokens == 5
     assert Usage(2, 3, 1) + Usage(4, 5, 2) == Usage(6, 8, 3)
+
+
+def test_provider_options_reject_values_that_are_not_json() -> None:
+    """Provider payload validation prevents opaque Python objects from leaking in."""
+    invalid_options = cast(JsonObject, {"callback": object()})
+
+    with pytest.raises(TypeError, match="JSON-compatible"):
+        ModelRequest.from_text("hello", provider_options=invalid_options)
+    with pytest.raises(ValueError, match="non-finite"):
+        ModelRequest.from_text("hello", provider_options={"temperature": float("nan")})
 
 
 def test_retry_policy_uses_retry_after_then_exponential_backoff() -> None:
