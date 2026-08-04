@@ -5,9 +5,10 @@ that need to call LLMs without spreading provider SDK details through applicatio
 provides normalized messages, responses, streams, errors, routing, retries, timeouts, tracing
 hooks, and token accounting while retaining provider-specific JSON options and raw SDK payloads.
 
-OpenAI Chat Completions is the first built-in integration. The provider lifecycle is implemented
-once through reusable transport, codec, stream-decoder, and error-mapping boundaries so another
-provider does not need to duplicate adapter orchestration.
+The [OpenAI Responses API](https://developers.openai.com/api/docs/guides/migrate-to-responses) is
+the first built-in integration and is the only OpenAI generation endpoint used. The provider
+lifecycle is implemented once through reusable transport, codec, stream-decoder, and error-mapping
+boundaries so another provider does not need to duplicate adapter orchestration.
 
 ## Setup
 
@@ -49,7 +50,7 @@ runtime = ModelRuntime(router)
 
 
 async def main() -> None:
-    openai_options = OpenAIProviderOptions(seed=7)
+    openai_options = OpenAIProviderOptions(store=False, reasoning_effort="low")
     request = ModelRequest(
         messages=(
             Message.system("Answer clearly and briefly."),
@@ -116,8 +117,8 @@ The normalized library code does not expose `Any`:
 
 - Tool arguments, tool JSON Schemas, and provider options use recursive `JsonValue` and
   `JsonObject` aliases.
-- `OpenAIProviderOptions` checks common OpenAI keys. Newly released fields can still pass through
-  its explicit JSON-typed `extra` mapping before the class is updated.
+- `OpenAIProviderOptions` checks common Responses API keys. Newly released fields can still pass
+  through its explicit JSON-typed `extra` mapping before the class is updated.
 - `ModelResponse.raw` and error details are `object | None` because the concrete value belongs to
   the selected SDK. Unlike `Any`, `object` requires a caller to narrow or cast before access.
 - Flexible constructor sequences are normalized to canonical tuple attributes. Reading
@@ -130,6 +131,33 @@ representation. Values are validated as JSON-compatible when a request is constr
 
 Strict checking is enforced with BasedPyright in addition to Ruff's annotation rules. Explicit
 `Any`, inferred `Any`, unknown types, and unnecessary type-ignore comments fail the type check.
+
+## OpenAI Responses behavior
+
+The OpenAI transport calls `AsyncOpenAI.responses.create` for complete and streaming requests.
+The codec maps normalized values to Responses concepts rather than Chat Completions shapes:
+
+- normalized messages become typed `input` items;
+- assistant tool calls become `function_call` items and tool results become matching
+  `function_call_output` items using the same `call_id`;
+- function definitions use the Responses API's internally tagged tool shape;
+- complete calls read typed `response.output` items; and
+- streams consume typed text, refusal, function-argument, and terminal response events.
+
+Responses-native hosted tools are combined with normalized function tools:
+
+```python
+options = OpenAIProviderOptions(
+    store=False,
+    tools=({"type": "web_search"},),
+    text={"verbosity": "low"},
+)
+```
+
+`reasoning_effort="high"` is an ergonomic shorthand for
+`reasoning={"effort": "high"}`. Likewise, `verbosity="low"` maps to
+`text={"verbosity": "low"}`. Pass structured-output configuration through `text`, including its
+`format` member, as required by Responses.
 
 ## Errors
 
@@ -186,9 +214,10 @@ its `finish` method returns one `StreamEnd`. `MyErrorMapper.translate` returns a
 error. The network-free [provider contract tests](tests/test_provider_adapter.py) are a concrete,
 executable example.
 
-Provider transports should not retry. Unknown options are interpreted only by the selected codec;
-for OpenAI, `model`, `messages`, and `stream` are reserved because the adapter owns request identity
-and invocation mode.
+Provider transports should not retry. Unknown options are interpreted only by the selected codec.
+For OpenAI, `model`, `input`, `stream`, `temperature`, `max_output_tokens`, and `timeout` are owned
+by normalized request fields and cannot be overridden through `provider_options`. Responses-native
+`tools` are handled specially and combined with normalized function tools.
 
 ## Development
 
@@ -205,10 +234,12 @@ uvx ruff format --check .
 ## Data handling and failure behavior
 
 Requests are sent directly to the provider selected by the router. This package does not persist
-prompts, responses, credentials, or traces. An injected `TraceObserver` controls its own data
-handling. `ModelResponse.raw`, error details, and tracing callbacks may contain provider payloads,
-so applications should apply their own redaction and retention policies. Observer failures are
-isolated from model calls, while provider failures cross the normalized error boundary.
+prompts, responses, credentials, or traces itself. OpenAI Responses are stored by the provider by
+default; pass `OpenAIProviderOptions(store=False)` when provider-side storage is not desired. An
+injected `TraceObserver` controls its own data handling. `ModelResponse.raw`, error details, and
+tracing callbacks may contain provider payloads, so applications should apply their own redaction
+and retention policies. Observer failures are isolated from model calls, while provider failures
+cross the normalized error boundary.
 
 ## Project structure
 
@@ -224,10 +255,14 @@ AGENTS.md                              Codex-native repository instructions
 
 ## Current limitations
 
-- OpenAI is the only included provider and uses Chat Completions.
-- OpenAI response normalization uses the first choice; additional `n` choices remain in `raw`.
-- Normalized OpenAI tool calls cover function tools; newer provider-specific tool forms remain in
-  `raw` until normalized types support them.
+- OpenAI is the only included provider and uses the Responses API.
+- OpenAI normalization captures output text, refusal text, and function calls. Reasoning, hosted
+  tool, citation, and other provider-specific output items remain available in `ModelResponse.raw`.
+- Replaying `ModelResponse.message` manually does not preserve OpenAI reasoning or hosted-tool
+  items. Use `previous_response_id` with provider-side state when those items must carry into a
+  later call.
+- The Responses API does not accept stop sequences or message names; the OpenAI codec rejects
+  normalized requests containing either instead of silently dropping them.
 - Usage totals are in memory and reset when the process exits.
 - The normalized image part accepts URLs and data URLs; file loading is left to the application.
 - Provider-specific response fields are available through `ModelResponse.raw`, not normalized.

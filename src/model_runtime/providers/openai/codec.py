@@ -1,32 +1,43 @@
-"""Typed translation between normalized values and OpenAI Chat Completions."""
+"""Typed translation between normalized values and OpenAI Responses."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Literal
+from collections.abc import Mapping, Sequence
+from typing import cast
 
-from openai.types.chat import (
-    ChatCompletion,
-    ChatCompletionAssistantMessageParam,
-    ChatCompletionChunk,
-    ChatCompletionContentPartImageParam,
-    ChatCompletionContentPartParam,
-    ChatCompletionContentPartTextParam,
-    ChatCompletionDeveloperMessageParam,
-    ChatCompletionFunctionToolParam,
-    ChatCompletionMessageFunctionToolCall,
-    ChatCompletionMessageFunctionToolCallParam,
-    ChatCompletionMessageParam,
-    ChatCompletionSystemMessageParam,
-    ChatCompletionToolMessageParam,
-    ChatCompletionToolUnionParam,
-    ChatCompletionUserMessageParam,
+from openai.types.responses import (
+    EasyInputMessageParam,
+    FunctionToolParam,
+    Response,
+    ResponseCompletedEvent,
+    ResponseErrorEvent,
+    ResponseFailedEvent,
+    ResponseFunctionCallArgumentsDeltaEvent,
+    ResponseFunctionToolCall,
+    ResponseFunctionToolCallParam,
+    ResponseIncompleteEvent,
+    ResponseInputImageParam,
+    ResponseInputItemParam,
+    ResponseInputMessageContentListParam,
+    ResponseInputTextParam,
+    ResponseOutputItemAddedEvent,
+    ResponseOutputMessage,
+    ResponseOutputRefusal,
+    ResponseOutputText,
+    ResponseRefusalDeltaEvent,
+    ResponseStreamEvent,
+    ResponseTextDeltaEvent,
+    ResponseUsage,
 )
-from openai.types.completion_usage import CompletionUsage
-from openai.types.shared_params.function_definition import FunctionDefinition
+from openai.types.responses.response_input_param import FunctionCallOutput
 
 from ...errors import InvalidRequestError, ProviderUnavailableError
-from ...json_types import JsonObject, parse_json_object
+from ...json_types import (
+    JsonObject,
+    JsonValue,
+    immutable_json_object,
+    parse_json_object,
+)
 from ...types import (
     FinishReason,
     ImagePart,
@@ -42,37 +53,21 @@ from ...types import (
     ToolDefinition,
     Usage,
 )
-from ..base import StreamDelta
+from ..base import StreamDecoder, StreamDelta
 from ._types import OpenAIRequest
 
-
-def _finish_reason(
-    value: Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
-    | None,
-) -> FinishReason:
-    if value is None:
-        return FinishReason.UNKNOWN
-    mapping = {
-        "stop": FinishReason.STOP,
-        "length": FinishReason.LENGTH,
-        "tool_calls": FinishReason.TOOL_CALLS,
-        "function_call": FinishReason.TOOL_CALLS,
-        "content_filter": FinishReason.CONTENT_FILTER,
-    }
-    return mapping.get(value, FinishReason.UNKNOWN)
+_ADAPTER_OWNED_OPTIONS = frozenset(
+    {"input", "max_output_tokens", "model", "stream", "temperature", "timeout"}
+)
 
 
-def _usage(raw: CompletionUsage | None) -> Usage:
+def _usage(raw: ResponseUsage | None) -> Usage:
     if raw is None:
         return Usage()
-    details = raw.prompt_tokens_details
-    cached_tokens = 0
-    if details is not None and details.cached_tokens is not None:
-        cached_tokens = details.cached_tokens
     return Usage(
-        input_tokens=raw.prompt_tokens,
-        output_tokens=raw.completion_tokens,
-        cached_tokens=cached_tokens,
+        input_tokens=raw.input_tokens,
+        output_tokens=raw.output_tokens,
+        cached_tokens=raw.input_tokens_details.cached_tokens,
     )
 
 
@@ -80,112 +75,130 @@ def _arguments(value: str) -> JsonObject | str:
     return parse_json_object(value) or value
 
 
-@dataclass(slots=True)
-class _ToolCallBuffer:
-    """Mutable assembly state for one streamed function call."""
+def _finish_reason(response: Response) -> FinishReason:
+    if response.status == "incomplete":
+        details = response.incomplete_details
+        if details is not None and details.reason == "max_output_tokens":
+            return FinishReason.LENGTH
+        if details is not None and details.reason == "content_filter":
+            return FinishReason.CONTENT_FILTER
+        return FinishReason.UNKNOWN
+    if response.status in {"failed", "cancelled"}:
+        return FinishReason.ERROR
+    if any(isinstance(item, ResponseFunctionToolCall) for item in response.output):
+        return FinishReason.TOOL_CALLS
+    if response.status == "completed":
+        return FinishReason.STOP
+    return FinishReason.UNKNOWN
 
-    identifier_parts: list[str] = field(default_factory=list)
-    name_parts: list[str] = field(default_factory=list)
-    argument_parts: list[str] = field(default_factory=list)
 
-    def append(
-        self,
-        *,
-        identifier: str | None,
-        name: str | None,
-        arguments: str | None,
-    ) -> None:
-        """Append non-empty fragments from one chunk."""
-        if identifier:
-            self.identifier_parts.append(identifier)
-        if name:
-            self.name_parts.append(name)
-        if arguments:
-            self.argument_parts.append(arguments)
+def _decode_response(response: Response, *, fallback_model: str) -> ModelResponse:
+    content: list[TextPart] = []
+    calls: list[ToolCall] = []
+    for item in response.output:
+        if isinstance(item, ResponseOutputMessage):
+            for part in item.content:
+                if isinstance(part, ResponseOutputText):
+                    content.append(TextPart(part.text))
+                elif isinstance(part, ResponseOutputRefusal):
+                    content.append(TextPart(part.refusal))
+        elif isinstance(item, ResponseFunctionToolCall):
+            calls.append(
+                ToolCall(
+                    id=item.call_id,
+                    name=item.name,
+                    arguments=_arguments(item.arguments),
+                )
+            )
 
-    def build(self, index: int) -> ToolCall:
-        """Build the normalized final tool call."""
-        arguments = "".join(self.argument_parts)
-        return ToolCall(
-            id="".join(self.identifier_parts) or f"tool_call_{index}",
-            name="".join(self.name_parts),
-            arguments=_arguments(arguments),
-        )
+    return ModelResponse(
+        message=Message(
+            MessageRole.ASSISTANT,
+            tuple(content),
+            tool_calls=tuple(calls),
+        ),
+        usage=_usage(response.usage),
+        finish_reason=_finish_reason(response),
+        raw=response,
+        model=str(response.model) or fallback_model,
+    )
 
 
 class OpenAIStreamDecoder:
-    """Decode and assemble the first choice in one OpenAI stream."""
+    """Decode typed Responses stream events and retain the terminal response."""
 
     def __init__(self, *, fallback_model: str) -> None:
         self._fallback_model = fallback_model
-        self._response_model = fallback_model
-        self._chunks: list[ChatCompletionChunk] = []
-        self._text_parts: list[str] = []
-        self._tool_calls: dict[int, _ToolCallBuffer] = {}
-        self._usage = Usage()
-        self._finish_reason = FinishReason.UNKNOWN
+        self._terminal_response: Response | None = None
+        self._tool_indexes: dict[int, int] = {}
 
-    def feed(self, chunk: ChatCompletionChunk) -> tuple[StreamDelta, ...]:
-        """Consume a native chunk and return normalized first-choice deltas."""
-        self._chunks.append(chunk)
-        self._response_model = chunk.model or self._response_model
-        if chunk.usage is not None:
-            self._usage = _usage(chunk.usage)
+    def feed(self, chunk: ResponseStreamEvent) -> tuple[StreamDelta, ...]:
+        """Consume one typed Responses event and return public deltas."""
+        if isinstance(chunk, ResponseTextDeltaEvent | ResponseRefusalDeltaEvent):
+            return (TextDelta(chunk.delta),)
 
-        events: list[StreamDelta] = []
-        for choice in chunk.choices:
-            if choice.index != 0:
-                continue
-            if choice.finish_reason is not None:
-                self._finish_reason = _finish_reason(choice.finish_reason)
-            if choice.delta.content:
-                self._text_parts.append(choice.delta.content)
-                events.append(TextDelta(choice.delta.content))
-            for tool_delta in choice.delta.tool_calls or ():
-                function = tool_delta.function
-                name = function.name if function is not None else None
-                arguments = function.arguments if function is not None else None
-                aggregate = self._tool_calls.setdefault(
-                    tool_delta.index,
-                    _ToolCallBuffer(),
-                )
-                aggregate.append(
-                    identifier=tool_delta.id,
-                    name=name,
-                    arguments=arguments,
-                )
-                events.append(
-                    ToolCallDelta(
-                        index=tool_delta.index,
-                        id=tool_delta.id,
-                        name=name,
-                        arguments_delta=arguments or "",
-                    )
-                )
-        return tuple(events)
+        if isinstance(chunk, ResponseOutputItemAddedEvent) and isinstance(
+            chunk.item, ResponseFunctionToolCall
+        ):
+            index = self._tool_index(chunk.output_index)
+            return (
+                ToolCallDelta(
+                    index=index,
+                    id=chunk.item.call_id,
+                    name=chunk.item.name,
+                    arguments_delta=chunk.item.arguments,
+                ),
+            )
+
+        if isinstance(chunk, ResponseFunctionCallArgumentsDeltaEvent):
+            return (
+                ToolCallDelta(
+                    index=self._tool_index(chunk.output_index),
+                    arguments_delta=chunk.delta,
+                ),
+            )
+
+        if isinstance(
+            chunk,
+            ResponseCompletedEvent | ResponseIncompleteEvent | ResponseFailedEvent,
+        ):
+            self._terminal_response = chunk.response
+            return ()
+
+        if isinstance(chunk, ResponseErrorEvent):
+            raise ProviderUnavailableError(
+                chunk.message,
+                retryable=False,
+                provider="openai",
+                details=chunk,
+            )
+        return ()
 
     def finish(self) -> StreamEnd:
-        """Build the terminal event from accumulated chunks."""
-        calls = tuple(
-            buffer.build(index) for index, buffer in sorted(self._tool_calls.items())
+        """Build the terminal event from the SDK's final response event."""
+        if self._terminal_response is None:
+            raise ProviderUnavailableError(
+                "OpenAI stream ended without a terminal response event",
+                retryable=False,
+                provider="openai",
+            )
+        response = _decode_response(
+            self._terminal_response,
+            fallback_model=self._fallback_model,
         )
-        text = "".join(self._text_parts)
-        response = ModelResponse(
-            message=Message(
-                MessageRole.ASSISTANT,
-                (TextPart(text),) if text else (),
-                tool_calls=calls,
-            ),
-            usage=self._usage,
-            finish_reason=self._finish_reason,
-            raw=tuple(self._chunks),
-            model=self._response_model,
-        )
-        return StreamEnd(response=response, usage=self._usage)
+        return StreamEnd(response=response)
+
+    def _tool_index(self, output_index: int) -> int:
+        try:
+            return self._tool_indexes[output_index]
+        except KeyError:
+            index = len(self._tool_indexes)
+            self._tool_indexes[output_index] = index
+            return index
 
 
 class OpenAICodec:
-    """Encode requests and decode responses without owning network behavior."""
+    """Encode requests and decode Responses without owning network behavior."""
 
     def encode_request(
         self,
@@ -194,122 +207,106 @@ class OpenAICodec:
         *,
         stream: bool,
     ) -> OpenAIRequest:
-        """Translate normalized request fields to typed SDK parameters."""
+        """Translate normalized fields to typed Responses API parameters."""
+        if request.stop:
+            raise InvalidRequestError(
+                "the OpenAI Responses API does not support stop sequences",
+                provider="openai",
+            )
+        provider_options, provider_tools = self._provider_options(
+            request.provider_options
+        )
+        input_items: list[ResponseInputItemParam] = []
+        for message in request.messages:
+            input_items.extend(self._message_items(message))
         return OpenAIRequest(
             model=model_id,
-            messages=tuple(self._message(message) for message in request.messages),
+            input=tuple(input_items),
             stream=stream,
-            tools=tuple(self._tool(tool) for tool in request.tools),
+            function_tools=tuple(self._tool(tool) for tool in request.tools),
+            provider_tools=provider_tools,
             temperature=request.temperature,
-            max_completion_tokens=request.max_output_tokens,
-            stop=request.stop,
+            max_output_tokens=request.max_output_tokens,
             timeout=request.timeout,
-            provider_options=request.provider_options,
+            provider_options=provider_options,
         )
 
     def decode_response(
         self,
-        response: ChatCompletion,
+        response: Response,
         *,
         fallback_model: str,
     ) -> ModelResponse:
-        """Translate the first Chat Completions choice to a normalized response."""
-        if not response.choices:
-            raise ProviderUnavailableError(
-                "OpenAI returned a response with no choices",
-                retryable=False,
-                provider="openai",
-                details=response,
-            )
-        choice = response.choices[0]
-        message = choice.message
-        calls = tuple(
-            self._function_call(call)
-            for call in message.tool_calls or ()
-            if isinstance(call, ChatCompletionMessageFunctionToolCall)
-        )
-        return ModelResponse(
-            message=Message(
-                MessageRole.ASSISTANT,
-                (TextPart(message.content),) if message.content else (),
-                tool_calls=calls,
-            ),
-            usage=_usage(response.usage),
-            finish_reason=_finish_reason(choice.finish_reason),
-            raw=response,
-            model=response.model or fallback_model,
-        )
+        """Translate typed output items into one normalized assistant response."""
+        return _decode_response(response, fallback_model=fallback_model)
 
     def stream_decoder(
         self,
         *,
         fallback_model: str,
-    ) -> OpenAIStreamDecoder:
-        """Create isolated state for one Chat Completions stream."""
+    ) -> StreamDecoder[ResponseStreamEvent]:
+        """Create isolated state for one Responses API event stream."""
         return OpenAIStreamDecoder(fallback_model=fallback_model)
 
     @classmethod
-    def _message(cls, message: Message) -> ChatCompletionMessageParam:
-        if message.role is MessageRole.SYSTEM:
-            cls._require_text_only(message)
-            result: ChatCompletionSystemMessageParam = {
-                "role": "system",
-                "content": message.text,
-            }
-            if message.name is not None:
-                result["name"] = message.name
-            return result
+    def _message_items(cls, message: Message) -> tuple[ResponseInputItemParam, ...]:
+        if message.name is not None:
+            raise InvalidRequestError(
+                "the OpenAI Responses API does not support message names",
+                provider="openai",
+            )
+        if message.role is not MessageRole.ASSISTANT and message.tool_calls:
+            raise InvalidRequestError(
+                "OpenAI tool calls may only be attached to assistant messages",
+                provider="openai",
+            )
 
-        if message.role is MessageRole.DEVELOPER:
+        if message.role is MessageRole.TOOL:
             cls._require_text_only(message)
-            developer: ChatCompletionDeveloperMessageParam = {
-                "role": "developer",
-                "content": message.text,
+            if message.tool_call_id is None:
+                raise InvalidRequestError(
+                    "an OpenAI tool message requires tool_call_id",
+                    provider="openai",
+                )
+            output: FunctionCallOutput = {
+                "type": "function_call_output",
+                "call_id": message.tool_call_id,
+                "output": message.text,
             }
-            if message.name is not None:
-                developer["name"] = message.name
-            return developer
+            return (output,)
 
         if message.role is MessageRole.USER:
-            content: str | tuple[ChatCompletionContentPartParam, ...]
+            content: str | ResponseInputMessageContentListParam
             if all(isinstance(part, TextPart) for part in message.content):
                 content = message.text
             else:
-                content = tuple(cls._content_part(part) for part in message.content)
-            user: ChatCompletionUserMessageParam = {
-                "role": "user",
-                "content": content,
-            }
-            if message.name is not None:
-                user["name"] = message.name
-            return user
-
-        if message.role is MessageRole.ASSISTANT:
-            cls._require_text_only(message)
-            assistant: ChatCompletionAssistantMessageParam = {
-                "role": "assistant",
-                "content": message.text or None,
-            }
-            if message.name is not None:
-                assistant["name"] = message.name
-            if message.tool_calls:
-                assistant["tool_calls"] = tuple(
-                    cls._message_tool_call(call) for call in message.tool_calls
-                )
-            return assistant
+                content = [cls._content_part(part) for part in message.content]
+            user: EasyInputMessageParam = {"role": "user", "content": content}
+            return (user,)
 
         cls._require_text_only(message)
-        if message.tool_call_id is None:
-            raise InvalidRequestError(
-                "an OpenAI tool message requires tool_call_id",
-                provider="openai",
-            )
-        tool_message: ChatCompletionToolMessageParam = {
-            "role": "tool",
-            "content": message.text,
-            "tool_call_id": message.tool_call_id,
-        }
-        return tool_message
+        if message.role is MessageRole.SYSTEM:
+            system: EasyInputMessageParam = {
+                "role": "system",
+                "content": message.text,
+            }
+            return (system,)
+        if message.role is MessageRole.DEVELOPER:
+            developer: EasyInputMessageParam = {
+                "role": "developer",
+                "content": message.text,
+            }
+            return (developer,)
+
+        items: list[ResponseInputItemParam] = []
+        if message.content or not message.tool_calls:
+            assistant: EasyInputMessageParam = {
+                "role": "assistant",
+                "content": message.text,
+            }
+            items.append(assistant)
+        items.extend(cls._message_tool_call(call) for call in message.tool_calls)
+        return tuple(items)
 
     @staticmethod
     def _require_text_only(message: Message) -> None:
@@ -320,52 +317,76 @@ class OpenAICodec:
             )
 
     @staticmethod
-    def _content_part(part: TextPart | ImagePart) -> ChatCompletionContentPartParam:
+    def _content_part(
+        part: TextPart | ImagePart,
+    ) -> ResponseInputTextParam | ResponseInputImageParam:
         if isinstance(part, TextPart):
-            text: ChatCompletionContentPartTextParam = {
-                "type": "text",
+            text: ResponseInputTextParam = {
+                "type": "input_text",
                 "text": part.text,
             }
             return text
-        image: ChatCompletionContentPartImageParam = {
-            "type": "image_url",
-            "image_url": {"url": part.url, "detail": part.detail},
+        image: ResponseInputImageParam = {
+            "type": "input_image",
+            "image_url": part.url,
+            "detail": part.detail,
         }
         return image
 
     @staticmethod
-    def _message_tool_call(
-        call: ToolCall,
-    ) -> ChatCompletionMessageFunctionToolCallParam:
+    def _message_tool_call(call: ToolCall) -> ResponseFunctionToolCallParam:
         return {
-            "id": call.id,
-            "type": "function",
-            "function": {
-                "name": call.name,
-                "arguments": call.arguments_json,
-            },
+            "type": "function_call",
+            "call_id": call.id,
+            "name": call.name,
+            "arguments": call.arguments_json,
         }
 
     @staticmethod
-    def _tool(tool: ToolDefinition) -> ChatCompletionToolUnionParam:
-        function: FunctionDefinition = {
+    def _tool(tool: ToolDefinition) -> FunctionToolParam:
+        parameters: dict[str, object] = dict(tool.parameters)
+        result: FunctionToolParam = {
+            "type": "function",
             "name": tool.name,
-            "parameters": dict(tool.parameters),
+            "parameters": parameters,
+            "strict": tool.strict,
         }
         if tool.description is not None:
-            function["description"] = tool.description
-        if tool.strict is not None:
-            function["strict"] = tool.strict
-        result: ChatCompletionFunctionToolParam = {
-            "type": "function",
-            "function": function,
-        }
+            result["description"] = tool.description
         return result
 
     @staticmethod
-    def _function_call(call: ChatCompletionMessageFunctionToolCall) -> ToolCall:
-        return ToolCall(
-            id=call.id,
-            name=call.function.name,
-            arguments=_arguments(call.function.arguments),
-        )
+    def _provider_options(
+        options: JsonObject,
+    ) -> tuple[JsonObject, tuple[JsonObject, ...]]:
+        conflicts = sorted(_ADAPTER_OWNED_OPTIONS.intersection(options))
+        if conflicts:
+            joined = ", ".join(conflicts)
+            raise InvalidRequestError(
+                f"OpenAI provider_options cannot override normalized fields: {joined}",
+                provider="openai",
+            )
+
+        values: dict[str, JsonValue] = dict(options)
+        if "tools" not in values:
+            return immutable_json_object(values), ()
+
+        raw_tools = values.pop("tools")
+        if isinstance(raw_tools, str | bytes | bytearray) or not isinstance(
+            raw_tools, Sequence
+        ):
+            raise InvalidRequestError(
+                "OpenAI provider option 'tools' must be a sequence of JSON objects",
+                provider="openai",
+            )
+
+        provider_tools: list[JsonObject] = []
+        for raw_tool in raw_tools:
+            if not isinstance(raw_tool, Mapping):
+                raise InvalidRequestError(
+                    "OpenAI provider option 'tools' must contain JSON objects",
+                    provider="openai",
+                )
+            tool = cast(JsonObject, raw_tool)
+            provider_tools.append(dict(immutable_json_object(tool)))
+        return immutable_json_object(values), tuple(provider_tools)

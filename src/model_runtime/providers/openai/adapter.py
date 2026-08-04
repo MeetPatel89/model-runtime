@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import openai
-from openai.types.chat import ChatCompletion, ChatCompletionChunk
+from openai.types.responses import Response, ResponseStreamEvent
 
 from ...errors import ModelRuntimeError
 from ...types import ModelCapabilities
@@ -15,10 +15,8 @@ from .errors import OpenAIErrorMetadataExtractor
 from .transport import OpenAIClientLike, OpenAITransport
 
 
-class OpenAIAdapter(
-    ProviderAdapter[OpenAIRequest, ChatCompletion, ChatCompletionChunk]
-):
-    """OpenAI Chat Completions integration using the official async SDK."""
+class OpenAIAdapter(ProviderAdapter[OpenAIRequest, Response, ResponseStreamEvent]):
+    """OpenAI Responses API integration using the official async SDK."""
 
     def __init__(
         self,
@@ -75,10 +73,11 @@ class OpenAIAdapter(
             streaming=True,
             provider_features=frozenset(
                 {
-                    "audio",
+                    "background",
+                    "built_in_tools",
+                    "conversation_state",
                     "logprobs",
-                    "prediction",
-                    "reasoning_effort",
+                    "reasoning",
                     "service_tier",
                 }
             ),

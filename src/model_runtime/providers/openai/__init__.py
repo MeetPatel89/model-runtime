@@ -1,4 +1,4 @@
-"""OpenAI Chat Completions provider integration."""
+"""OpenAI Responses API provider integration."""
 
 from ._types import OpenAIProviderOptions
 from .adapter import OpenAIAdapter

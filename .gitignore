@@ -18,3 +18,6 @@ wheels/
 
 # environment variables
 .env
+
+# notebooks
+notebooks/

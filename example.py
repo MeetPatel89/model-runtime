@@ -1,4 +1,4 @@
-"""Example of using the model_runtime library to interact with the OpenAI API."""
+"""Example of using model_runtime with the OpenAI Responses API."""
 
 import asyncio
 import os
@@ -21,14 +21,14 @@ runtime = ModelRuntime(router)
 
 async def main() -> None:
     """Run a completion and a stream against the configured OpenAI model."""
-    openai_options = OpenAIProviderOptions(seed=7)
+    openai_options = OpenAIProviderOptions(store=False, reasoning_effort="low")
     request = ModelRequest(
         messages=(
             Message.system("Answer clearly and briefly."),
             Message.user("Why is the sky blue?"),
         ),
         timeout=30,
-        # OpenAI-specific options pass through to the SDK unchanged.
+        # OpenAI-specific options are translated only inside the OpenAI codec.
         provider_options=openai_options,
     )
 
