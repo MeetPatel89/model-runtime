@@ -103,6 +103,10 @@ response = await runtime.complete("claude", request)
 provider's model ID. The runtime owns request timeouts, retry policy, tracing notifications, and
 usage totals. Provider SDK retries stay disabled so there is one visible retry owner.
 
+For a step-by-step walkthrough of one complete and streaming call through both OpenAI and
+Anthropic — including encode/decode, tool rounds, retries, and sequence diagrams — see
+[`docs/end-to-end-request-flow.md`](docs/end-to-end-request-flow.md).
+
 ```text
 application -> ModelRuntime -> ModelRouter -> ChatModel / ProviderAdapter
                  |                |                    |
@@ -318,6 +322,7 @@ src/model_runtime/providers/base.py    reusable typed provider orchestration and
 src/model_runtime/providers/errors.py  shared provider error normalization
 src/model_runtime/providers/anthropic/ Anthropic adapter, transport, codec, stream, and errors
 src/model_runtime/providers/openai/    OpenAI adapter, transport, codec, stream, and errors
+docs/end-to-end-request-flow.md        detailed OpenAI and Anthropic request flow walkthrough
 tests/                                 network-free runtime and provider contract tests
 AGENTS.md                              Codex-native repository instructions
 .cursor/rules/                         Cursor-native repository instructions
