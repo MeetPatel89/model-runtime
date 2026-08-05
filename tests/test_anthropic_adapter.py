@@ -366,6 +366,7 @@ async def test_default_max_tokens_and_base64_images() -> None:
     ).complete("claude-test", request)
 
     assert messages.complete_calls[0]["max_tokens"] == 321
+    assert "output_config" not in messages.complete_calls[0]
     assert messages.complete_calls[0]["messages"] == [
         {
             "role": "user",

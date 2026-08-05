@@ -43,8 +43,8 @@ from model_runtime import (
     OpenAIAdapter,
 )
 
-openai_adapter = OpenAIAdapter()          # AsyncOpenAI, max_retries=0
-anthropic_adapter = AnthropicAdapter()    # AsyncAnthropic, max_retries=0
+openai_adapter = OpenAIAdapter()  # AsyncOpenAI, max_retries=0
+anthropic_adapter = AnthropicAdapter()  # AsyncAnthropic, max_retries=0
 
 router = (
     ModelRouter()
@@ -282,9 +282,14 @@ app
 import asyncio
 import os
 from model_runtime import (
-    Message, ModelRequest, ModelRouter, ModelRuntime,
-    OpenAIAdapter, OpenAIProviderOptions,
+    Message,
+    ModelRequest,
+    ModelRouter,
+    ModelRuntime,
+    OpenAIAdapter,
+    OpenAIProviderOptions,
 )
+
 
 async def main() -> None:
     adapter = OpenAIAdapter()
@@ -301,6 +306,7 @@ async def main() -> None:
     )
     response = await runtime.complete("chat", request)
     print(response.text)
+
 
 asyncio.run(main())
 ```
@@ -412,24 +418,25 @@ app
 import asyncio
 import os
 from model_runtime import (
-    AnthropicAdapter, AnthropicProviderOptions,
-    ModelRequest, ModelRouter, ModelRuntime,
+    AnthropicAdapter,
+    ModelRequest,
+    ModelRouter,
+    ModelRuntime,
 )
+
 
 async def main() -> None:
     adapter = AnthropicAdapter(default_max_output_tokens=1024)
-    router = ModelRouter().register(
-        "claude", adapter, os.environ["ANTHROPIC_MODEL"]
-    )
+    router = ModelRouter().register("claude", adapter, os.environ["ANTHROPIC_MODEL"])
     runtime = ModelRuntime(router)
 
     request = ModelRequest.from_text(
         "Why is the sky blue?",
         timeout=30,
-        provider_options=AnthropicProviderOptions(effort="low"),
     )
     response = await runtime.complete("claude", request)
     print(response.text)
+
 
 asyncio.run(main())
 ```

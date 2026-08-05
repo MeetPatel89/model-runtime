@@ -86,13 +86,12 @@ To route the same normalized request through Anthropic, only the adapter, model 
 options change:
 
 ```python
-from model_runtime import AnthropicAdapter, AnthropicProviderOptions
+from model_runtime import AnthropicAdapter
 
 anthropic_adapter = AnthropicAdapter(default_max_output_tokens=1024)
 router.register("claude", anthropic_adapter, os.environ["ANTHROPIC_MODEL"])
 request = ModelRequest.from_text(
     "Why is the sky blue?",
-    provider_options=AnthropicProviderOptions(effort="low"),
 )
 response = await runtime.complete("claude", request)
 ```
@@ -223,7 +222,11 @@ options = AnthropicProviderOptions(
 
 `effort="high"` is shorthand for `output_config={"effort": "high"}` and cannot be combined with
 an explicit `output_config`. Use `thinking`, `tool_choice`, `cache_control`, `service_tier`, and
-other named `AnthropicProviderOptions` fields for their corresponding Messages features.
+other named `AnthropicProviderOptions` fields for their corresponding Messages features. These
+features are model-specific: only send `effort` to a model listed as compatible in Anthropic's
+[effort documentation](https://platform.claude.com/docs/en/build-with-claude/effort), or check the
+model's reported capabilities first. Unsupported options remain visible as `InvalidRequestError`
+rather than being silently removed by the adapter.
 
 ## Errors
 
@@ -247,6 +250,10 @@ router.register("careful", adapter, "provider-careful-model")
 if router.capabilities("fast").vision:
     ...
 ```
+
+Capabilities describe what an adapter can represent. Providers can expose different feature sets
+for different model IDs, so model-specific options such as Anthropic `effort` must also be checked
+against the provider's current model capabilities.
 
 An optional selector can map an application-level name to a route using the complete request:
 
