@@ -1,8 +1,8 @@
-"""Extraction of typed error metadata from OpenAI SDK exceptions."""
+"""Extraction of typed error metadata from Anthropic SDK exceptions."""
 
 from __future__ import annotations
 
-import openai
+import anthropic
 
 from .._http import (
     contains_error_marker,
@@ -14,19 +14,18 @@ from .._http import (
 from ..errors import ProviderErrorKind, ProviderErrorMetadata
 
 
-class OpenAIErrorMetadataExtractor:
+class AnthropicErrorMetadataExtractor:
     """Inspect official SDK errors plus SDK-shaped test doubles."""
 
-    provider_name = "openai"
+    provider_name = "anthropic"
 
     def extract(self, error: Exception) -> ProviderErrorMetadata:
         """Extract status, retry guidance, details, and semantic kind."""
         status_code = error_status_code(error)
         details = error_body(error)
-        kind = self._kind(error, status_code, details)
         return ProviderErrorMetadata(
             message=str(error) or type(error).__name__,
-            kind=kind,
+            kind=self._kind(error, status_code, details),
             status_code=status_code,
             retry_after=error_retry_after(error),
             details=details,
@@ -39,26 +38,35 @@ class OpenAIErrorMetadataExtractor:
         status_code: int | None,
         details: object | None,
     ) -> ProviderErrorKind:
-        code = error_code(error)
-        if cls._contains_content_filter(code) or cls._contains_content_filter(details):
+        markers = ("content_filter", "content_policy", "safety_policy")
+        if contains_error_marker(error_code(error), markers):
             return ProviderErrorKind.CONTENT_FILTER
-        if cls._contains_content_filter(str(error)):
+        if contains_error_marker(details, markers):
             return ProviderErrorKind.CONTENT_FILTER
-        if isinstance(error, openai.AuthenticationError | openai.PermissionDeniedError):
+        if isinstance(
+            error,
+            anthropic.AuthenticationError | anthropic.PermissionDeniedError,
+        ):
             return ProviderErrorKind.AUTH
-        if isinstance(error, openai.RateLimitError):
+        if isinstance(error, anthropic.RateLimitError):
             return ProviderErrorKind.RATE_LIMIT
-        if isinstance(error, openai.APITimeoutError):
+        if isinstance(error, anthropic.APITimeoutError):
             return ProviderErrorKind.TIMEOUT
         if isinstance(
             error,
-            openai.BadRequestError
-            | openai.NotFoundError
-            | openai.ConflictError
-            | openai.UnprocessableEntityError,
+            anthropic.BadRequestError
+            | anthropic.NotFoundError
+            | anthropic.ConflictError
+            | anthropic.RequestTooLargeError
+            | anthropic.UnprocessableEntityError,
         ):
             return ProviderErrorKind.INVALID_REQUEST
-        if isinstance(error, openai.APIConnectionError | openai.InternalServerError):
+        if isinstance(
+            error,
+            anthropic.APIConnectionError
+            | anthropic.InternalServerError
+            | anthropic.OverloadedError,
+        ):
             return ProviderErrorKind.UNAVAILABLE
         if status_code in {401, 403}:
             return ProviderErrorKind.AUTH
@@ -66,12 +74,8 @@ class OpenAIErrorMetadataExtractor:
             return ProviderErrorKind.RATE_LIMIT
         if status_code == 408:
             return ProviderErrorKind.TIMEOUT
-        if status_code in {400, 404, 409, 422}:
+        if status_code in {400, 404, 409, 413, 422}:
             return ProviderErrorKind.INVALID_REQUEST
         if status_code is not None and status_code >= 500:
             return ProviderErrorKind.UNAVAILABLE
         return ProviderErrorKind.UNKNOWN
-
-    @staticmethod
-    def _contains_content_filter(value: object) -> bool:
-        return contains_error_marker(value, ("content_filter", "content_policy"))

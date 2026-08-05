@@ -12,6 +12,8 @@ from .errors import (
 from .json_types import JsonObject, JsonPrimitive, JsonValue
 from .model import ChatModel
 from .providers import (
+    AnthropicAdapter,
+    AnthropicProviderOptions,
     ErrorMetadataExtractor,
     OpenAIAdapter,
     OpenAIProviderOptions,
@@ -51,6 +53,8 @@ from .types import (
 )
 
 __all__ = [
+    "AnthropicAdapter",
+    "AnthropicProviderOptions",
     "AuthError",
     "ChatModel",
     "ContentFilterError",

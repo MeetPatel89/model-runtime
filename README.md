@@ -5,10 +5,11 @@ that need to call LLMs without spreading provider SDK details through applicatio
 provides normalized messages, responses, streams, errors, routing, retries, timeouts, tracing
 hooks, and token accounting while retaining provider-specific JSON options and raw SDK payloads.
 
-The [OpenAI Responses API](https://developers.openai.com/api/docs/guides/migrate-to-responses) is
-the first built-in integration and is the only OpenAI generation endpoint used. The provider
-lifecycle is implemented once through reusable transport, codec, stream-decoder, and error-mapping
-boundaries so another provider does not need to duplicate adapter orchestration.
+Built-in integrations use the [OpenAI Responses
+API](https://developers.openai.com/api/docs/guides/migrate-to-responses) and the [Anthropic
+Messages API](https://platform.claude.com/docs/en/api/messages/create). The provider lifecycle is
+implemented once through reusable transport, codec, stream-decoder, and error-mapping boundaries,
+so each integration contains provider translation rather than duplicated adapter orchestration.
 
 ## Setup
 
@@ -18,11 +19,15 @@ Python 3.14 and [`uv`](https://docs.astral.sh/uv/) are required.
 uv sync
 export OPENAI_API_KEY="your-key"
 export OPENAI_MODEL="your-openai-model-id"
+# Or, when using Anthropic:
+export ANTHROPIC_API_KEY="your-key"
+export ANTHROPIC_MODEL="your-anthropic-model-id"
 ```
 
 The OpenAI SDK reads `OPENAI_API_KEY` when no explicit key is supplied. Credentials, organization,
 project, and a custom base URL can instead be passed to `OpenAIAdapter`. This package does not use
-global configuration of its own.
+global configuration of its own. Likewise, the Anthropic SDK reads `ANTHROPIC_API_KEY`; an API key,
+auth token, and custom base URL can instead be passed to `AnthropicAdapter`.
 
 ## Complete and streaming calls
 
@@ -77,6 +82,21 @@ asyncio.run(main())
 `runtime.total_usage` and `runtime.usage_by_model` contain process-local totals for successfully
 completed calls and streams. A stream is counted after its final `StreamEnd` is received.
 
+To route the same normalized request through Anthropic, only the adapter, model ID, and provider
+options change:
+
+```python
+from model_runtime import AnthropicAdapter, AnthropicProviderOptions
+
+anthropic_adapter = AnthropicAdapter(default_max_output_tokens=1024)
+router.register("claude", anthropic_adapter, os.environ["ANTHROPIC_MODEL"])
+request = ModelRequest.from_text(
+    "Why is the sky blue?",
+    provider_options=AnthropicProviderOptions(effort="low"),
+)
+response = await runtime.complete("claude", request)
+```
+
 ## Architecture
 
 `ModelRuntime` receives a logical model name. `ModelRouter` resolves it to a `ChatModel` and the
@@ -103,9 +123,10 @@ The reusable provider components have focused responsibilities:
 | `StreamDecoder` | Stateful chunk normalization and construction of one terminal `StreamEnd` |
 | `ProviderErrorMapper` | Provider exception to `ModelRuntimeError` translation |
 
-`OpenAIAdapter` assembles `OpenAITransport`, `OpenAICodec`, `OpenAIStreamDecoder`, and the standard
-error mapper with OpenAI-specific metadata extraction. OpenAI request translation, networking,
-stream state, and exception inspection therefore have separate reasons to change.
+`OpenAIAdapter` and `AnthropicAdapter` each assemble provider-specific transports, codecs, stream
+decoders, and metadata extractors around the same `ProviderAdapter` and standard error mapper.
+Request translation, networking, stream state, and exception inspection therefore remain focused
+components without duplicating invocation orchestration.
 
 The default `RetryPolicy` uses exponential backoff with jitter and honors a provider
 `Retry-After` header. Streaming calls retry only before the first delta; retrying after output has
@@ -119,6 +140,8 @@ The normalized library code does not expose `Any`:
   `JsonObject` aliases.
 - `OpenAIProviderOptions` checks common Responses API keys. Newly released fields can still pass
   through its explicit JSON-typed `extra` mapping before the class is updated.
+- `AnthropicProviderOptions` does the same for Messages API options and combines provider-native
+  tools with normalized function tools.
 - `ModelResponse.raw` and error details are `object | None` because the concrete value belongs to
   the selected SDK. Unlike `Any`, `object` requires a caller to narrow or cast before access.
 - Flexible constructor sequences are normalized to canonical tuple attributes. Reading
@@ -158,6 +181,45 @@ options = OpenAIProviderOptions(
 `reasoning={"effort": "high"}`. Likewise, `verbosity="low"` maps to
 `text={"verbosity": "low"}`. Pass structured-output configuration through `text`, including its
 `format` member, as required by Responses.
+
+## Anthropic Messages behavior
+
+The Anthropic transport uses `AsyncAnthropic.messages.create` for complete calls and the SDK's
+typed `messages.stream` helper for streams. The codec maps normalized values to Messages concepts:
+
+- leading system and developer messages become top-level `system` text blocks;
+- later system and developer messages retain their position as Anthropic mid-conversation
+  `system` messages;
+- assistant tool calls become `tool_use` blocks and normalized tool messages become user
+  `tool_result` blocks with the matching `tool_use_id`;
+- HTTP image URLs and base64 JPEG, PNG, GIF, and WebP data URLs become Anthropic image sources;
+- complete calls read typed text and `tool_use` content blocks; and
+- streams consume typed text, partial tool-input JSON, and terminal message events.
+
+The Messages API requires `max_tokens`. `AnthropicAdapter` uses
+`default_max_output_tokens=1024` when `ModelRequest.max_output_tokens` is omitted; pass a different
+positive constructor default when appropriate. Anthropic usage reports regular, cache-creation,
+and cache-read input tokens separately. Normalized `Usage.input_tokens` contains their sum, while
+`Usage.cached_tokens` contains the cache-read subset.
+
+Provider-native tools and structured output remain available without changing normalized types:
+
+```python
+options = AnthropicProviderOptions(
+    tools=({"type": "web_search_20260318", "name": "web_search"},),
+    output_config={
+        "effort": "high",
+        "format": {
+            "type": "json_schema",
+            "schema": {"type": "object"},
+        },
+    },
+)
+```
+
+`effort="high"` is shorthand for `output_config={"effort": "high"}` and cannot be combined with
+an explicit `output_config`. Use `thinking`, `tool_choice`, `cache_control`, `service_tier`, and
+other named `AnthropicProviderOptions` fields for their corresponding Messages features.
 
 ## Errors
 
@@ -219,6 +281,10 @@ For OpenAI, `model`, `input`, `stream`, `temperature`, `max_output_tokens`, and 
 by normalized request fields and cannot be overridden through `provider_options`. Responses-native
 `tools` are handled specially and combined with normalized function tools.
 
+For Anthropic, `model`, `messages`, `stream`, `system`, `temperature`, `max_tokens`,
+`stop_sequences`, and `timeout` are adapter-owned. Anthropic-native `tools` are likewise combined
+with normalized function tools.
+
 ## Development
 
 Tests use fake transports and official SDK response models; they make no network calls.
@@ -236,10 +302,13 @@ uvx ruff format --check .
 Requests are sent directly to the provider selected by the router. This package does not persist
 prompts, responses, credentials, or traces itself. OpenAI Responses are stored by the provider by
 default; pass `OpenAIProviderOptions(store=False)` when provider-side storage is not desired. An
-injected `TraceObserver` controls its own data handling. `ModelResponse.raw`, error details, and
-tracing callbacks may contain provider payloads, so applications should apply their own redaction
-and retention policies. Observer failures are isolated from model calls, while provider failures
-cross the normalized error boundary.
+injected `TraceObserver` controls its own data handling. Anthropic documents the standard Messages
+API's current retention behavior in its [API data retention
+guide](https://platform.claude.com/docs/en/manage-claude/api-and-data-retention); provider-native
+tools can have different policies. `ModelResponse.raw`, error details, and tracing callbacks may
+contain provider payloads, so applications should apply their own redaction and retention policies.
+Observer failures are isolated from model calls, while provider failures cross the normalized
+error boundary.
 
 ## Project structure
 
@@ -247,6 +316,7 @@ cross the normalized error boundary.
 src/model_runtime/                     domain types, runtime, router, retry, and tracing
 src/model_runtime/providers/base.py    reusable typed provider orchestration and protocols
 src/model_runtime/providers/errors.py  shared provider error normalization
+src/model_runtime/providers/anthropic/ Anthropic adapter, transport, codec, stream, and errors
 src/model_runtime/providers/openai/    OpenAI adapter, transport, codec, stream, and errors
 tests/                                 network-free runtime and provider contract tests
 AGENTS.md                              Codex-native repository instructions
@@ -255,7 +325,7 @@ AGENTS.md                              Codex-native repository instructions
 
 ## Current limitations
 
-- OpenAI is the only included provider and uses the Responses API.
+- OpenAI uses the Responses API exclusively; Anthropic uses the Messages API exclusively.
 - OpenAI normalization captures output text, refusal text, and function calls. Reasoning, hosted
   tool, citation, and other provider-specific output items remain available in `ModelResponse.raw`.
 - Replaying `ModelResponse.message` manually does not preserve OpenAI reasoning or hosted-tool
@@ -263,7 +333,16 @@ AGENTS.md                              Codex-native repository instructions
   later call.
 - The Responses API does not accept stop sequences or message names; the OpenAI codec rejects
   normalized requests containing either instead of silently dropping them.
+- Anthropic normalization captures output text and client `tool_use` blocks. Thinking, citations,
+  server-tool output, containers, and other provider-specific blocks remain in `ModelResponse.raw`.
+- Anthropic has no equivalent of normalized image detail levels; requests using `low` or `high`
+  are rejected rather than silently downgraded. Supported data URLs must be base64 JPEG, PNG, GIF,
+  or WebP images.
+- Normalized developer messages map to Anthropic system instructions because Messages has no
+  separate developer role. Mid-conversation system messages remain subject to model support and
+  Anthropic's placement rules.
 - Usage totals are in memory and reset when the process exits.
 - The normalized image part accepts URLs and data URLs; file loading is left to the application.
 - Provider-specific response fields are available through `ModelResponse.raw`, not normalized.
 - An injected OpenAI-compatible client is assumed to have its own SDK retries disabled.
+- An injected Anthropic-compatible client is likewise assumed to have SDK retries disabled.

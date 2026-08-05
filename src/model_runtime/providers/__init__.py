@@ -1,5 +1,6 @@
 """Reusable provider boundaries and built-in integrations."""
 
+from .anthropic import AnthropicAdapter, AnthropicProviderOptions
 from .base import (
     ProviderAdapter,
     ProviderCodec,
@@ -17,6 +18,8 @@ from .errors import (
 from .openai import OpenAIAdapter, OpenAIProviderOptions
 
 __all__ = [
+    "AnthropicAdapter",
+    "AnthropicProviderOptions",
     "ErrorMetadataExtractor",
     "OpenAIAdapter",
     "OpenAIProviderOptions",
