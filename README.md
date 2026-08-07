@@ -29,6 +29,60 @@ project, and a custom base URL can instead be passed to `OpenAIAdapter`. This pa
 global configuration of its own. Likewise, the Anthropic SDK reads `ANTHROPIC_API_KEY`; an API key,
 auth token, and custom base URL can instead be passed to `AnthropicAdapter`.
 
+### Optional aiohttp transport
+
+Both provider SDKs use `httpx` asynchronously by default. The SDK and adapter APIs remain async
+when `DefaultAioHttpClient` replaces only their low-level HTTP transport. Applications with high
+request concurrency can opt into this `aiohttp` support:
+
+```bash
+uv sync --extra aiohttp
+```
+
+Construct the HTTP client supplied by the relevant SDK, pass it to that SDK's async client, and
+inject the context-managed SDK client into the adapter:
+
+```python
+import anthropic
+import openai
+
+from model_runtime import AnthropicAdapter, OpenAIAdapter
+
+
+async def use_openai_aiohttp() -> None:
+    http_client = openai.DefaultAioHttpClient()
+    async with openai.AsyncOpenAI(
+        http_client=http_client,
+        max_retries=0,
+    ) as client:
+        adapter = OpenAIAdapter(client=client)
+        # Register and use adapter while the SDK client context is open.
+
+
+async def use_anthropic_aiohttp() -> None:
+    http_client = anthropic.DefaultAioHttpClient()
+    async with anthropic.AsyncAnthropic(
+        http_client=http_client,
+        max_retries=0,
+    ) as client:
+        adapter = AnthropicAdapter(client=client)
+        # Register and use adapter while the SDK client context is open.
+```
+
+Injected SDK clients are caller-owned: adapters do not close them, so keep each adapter's use
+inside the client context or otherwise close the client explicitly. `max_retries=0` keeps
+`ModelRuntime` as the sole retry owner.
+
+The optional backend can improve HTTP throughput under heavy concurrency; it does not make model
+inference faster or guarantee lower latency for an individual request. `httpx` remains the default
+because workload concurrency is application-specific and the compatibility layer does not support
+every HTTPX feature, including write timeouts, event hooks, SOCKS or HTTPS proxies, and some HTTPX
+extensions. Enable `aiohttp` only after measuring a representative application workload. See the
+[OpenAI SDK guidance](https://github.com/openai/openai-python#with-aiohttp), [Anthropic SDK
+guidance](https://platform.claude.com/docs/en/cli-sdks-libraries/sdks/python#using-aiohttp-for-better-concurrency),
+and [`httpx-aiohttp` compatibility notes](https://karpetrosyan.github.io/httpx-aiohttp/compatibility/)
+for details.
+
 ## Complete and streaming calls
 
 The repository's [`example.py`](example.py) runs with `uv run python example.py`:
@@ -298,7 +352,8 @@ with normalized function tools.
 
 ## Development
 
-Tests use fake transports and official SDK response models; they make no network calls.
+Most tests use fake transports and official SDK response models. The optional lifecycle smoke test
+constructs real SDK and HTTP clients but sends no requests; no test makes a network call.
 
 ```bash
 uv sync
@@ -307,6 +362,9 @@ uv run basedpyright
 uvx ruff check .
 uvx ruff format --check .
 ```
+
+To include and exercise the optional `aiohttp` transport, run `uv sync --extra aiohttp` before the
+same checks. The optional smoke test skips automatically when that extra is not installed.
 
 ## Data handling and failure behavior
 
