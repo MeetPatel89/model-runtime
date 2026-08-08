@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
-import anthropic
+from anthropic import (
+    APIConnectionError,
+    APITimeoutError,
+    AuthenticationError,
+    BadRequestError,
+    ConflictError,
+    InternalServerError,
+    NotFoundError,
+    OverloadedError,
+    PermissionDeniedError,
+    RateLimitError,
+    RequestTooLargeError,
+    UnprocessableEntityError,
+)
 
 from .._http import (
     contains_error_marker,
@@ -43,29 +56,24 @@ class AnthropicErrorMetadataExtractor:
             return ProviderErrorKind.CONTENT_FILTER
         if contains_error_marker(details, markers):
             return ProviderErrorKind.CONTENT_FILTER
-        if isinstance(
-            error,
-            anthropic.AuthenticationError | anthropic.PermissionDeniedError,
-        ):
+        if isinstance(error, AuthenticationError | PermissionDeniedError):
             return ProviderErrorKind.AUTH
-        if isinstance(error, anthropic.RateLimitError):
+        if isinstance(error, RateLimitError):
             return ProviderErrorKind.RATE_LIMIT
-        if isinstance(error, anthropic.APITimeoutError):
+        if isinstance(error, APITimeoutError):
             return ProviderErrorKind.TIMEOUT
         if isinstance(
             error,
-            anthropic.BadRequestError
-            | anthropic.NotFoundError
-            | anthropic.ConflictError
-            | anthropic.RequestTooLargeError
-            | anthropic.UnprocessableEntityError,
+            BadRequestError
+            | NotFoundError
+            | ConflictError
+            | RequestTooLargeError
+            | UnprocessableEntityError,
         ):
             return ProviderErrorKind.INVALID_REQUEST
         if isinstance(
             error,
-            anthropic.APIConnectionError
-            | anthropic.InternalServerError
-            | anthropic.OverloadedError,
+            APIConnectionError | InternalServerError | OverloadedError,
         ):
             return ProviderErrorKind.UNAVAILABLE
         if status_code in {401, 403}:

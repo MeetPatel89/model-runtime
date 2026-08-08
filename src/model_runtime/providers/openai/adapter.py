@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import openai
+from openai import AsyncOpenAI
 from openai.types.responses import Response, ResponseStreamEvent
 
 from ...errors import ModelRuntimeError
@@ -29,7 +29,7 @@ class OpenAIAdapter(ProviderAdapter[OpenAIRequest, Response, ResponseStreamEvent
         capabilities: ModelCapabilities | None = None,
     ) -> None:
         if client is None:
-            client = openai.AsyncOpenAI(
+            client = AsyncOpenAI(
                 api_key=api_key,
                 base_url=base_url,
                 organization=organization,

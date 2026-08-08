@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable
 from typing import Protocol, cast
 
-import openai
+from openai import AsyncOpenAI
 from openai.types.responses import Response, ResponseStreamEvent
 
 from ...errors import InvalidRequestError, ProviderUnavailableError
@@ -44,7 +44,7 @@ class OpenAIClient(Protocol):
         ...
 
 
-type OpenAIClientLike = openai.AsyncOpenAI | OpenAIClient
+type OpenAIClientLike = AsyncOpenAI | OpenAIClient
 
 
 class OpenAITransport:

@@ -6,8 +6,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import httpx
-import openai
 import pytest
+from openai import RateLimitError as OpenAISDKRateLimitError
 from openai.types.responses import (
     Response,
     ResponseCompletedEvent,
@@ -40,6 +40,7 @@ from model_runtime import (
     ToolDefinition,
     Usage,
 )
+from model_runtime.providers.openai import adapter as openai_adapter
 from model_runtime.providers.openai.transport import OpenAICreateResult
 
 
@@ -151,7 +152,7 @@ def test_constructs_sdk_client_with_retries_disabled(
         options.update(kwargs)
         return created
 
-    monkeypatch.setattr(openai, "AsyncOpenAI", make_client)
+    monkeypatch.setattr(openai_adapter, "AsyncOpenAI", make_client)
 
     adapter = OpenAIAdapter(
         api_key="test-key",
@@ -594,7 +595,7 @@ def test_maps_constructed_openai_sdk_exception() -> None:
         headers={"retry-after": "1.25"},
         json={"error": {"message": "slow down"}},
     )
-    source = openai.RateLimitError(
+    source = OpenAISDKRateLimitError(
         "slow down",
         response=response,
         body={"error": {"message": "slow down"}},

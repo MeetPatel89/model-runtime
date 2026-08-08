@@ -1,0 +1,33 @@
+---
+description: Prefer from-imports over bare package imports for used symbols
+globs: **/*.py
+alwaysApply: false
+---
+# Python Import Style
+
+Prefer importing the specific names you use. Do not import a package only to
+qualify attributes as `package.Name`.
+
+```python
+# Good
+from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI, RateLimitError as OpenAISDKRateLimitError
+from anthropic import types as anthropic_types
+
+client = AsyncAnthropic(max_retries=0)
+
+# Bad
+import anthropic
+import openai
+
+client = anthropic.AsyncAnthropic(max_retries=0)
+```
+
+Guidelines:
+
+1. Use `from package import Name` for classes, functions, and exceptions.
+2. Use `from package import submodule as alias` when a submodule alias is needed.
+3. Alias colliding names explicitly (for example SDK vs runtime `RateLimitError`).
+4. Keep `from package.subpackage import Name` for nested modules; do not rewrite
+   those as bare `import package`.
+5. Apply the same style in source, tests, notebooks, and README examples.

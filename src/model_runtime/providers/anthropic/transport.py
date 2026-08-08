@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Awaitable
 from types import TracebackType
 from typing import Protocol, cast
 
-import anthropic
+from anthropic import AsyncAnthropic
 from anthropic.lib.streaming import ParsedMessageStreamEvent
 from anthropic.types import Message
 
@@ -62,7 +62,7 @@ class AnthropicClient(Protocol):
         ...
 
 
-type AnthropicClientLike = anthropic.AsyncAnthropic | AnthropicClient
+type AnthropicClientLike = AsyncAnthropic | AnthropicClient
 
 
 class AnthropicTransport:
@@ -85,6 +85,7 @@ class AnthropicTransport:
                 "completion transport received a streaming Anthropic request",
                 provider="anthropic",
             )
+        print("request.as_kwargs()", request.as_kwargs())
         result = await self._endpoint.create(**request.as_kwargs())
         if not isinstance(result, Message):
             raise ProviderUnavailableError(

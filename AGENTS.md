@@ -15,6 +15,28 @@ not receive conflicting guidance.
 - Cursor-specific `.mdc` files remain under `.cursor/rules/`; do not relocate
   them when adding their Codex equivalent.
 
+## Python import style
+
+Prefer importing the specific names you use. Do not import a package only to
+qualify attributes as `package.Name`.
+
+- Use `from package import Name` for classes, functions, and exceptions.
+- Use `from package import submodule as alias` when a submodule alias is needed.
+- Alias colliding names explicitly (for example SDK vs runtime `RateLimitError`).
+- Keep `from package.subpackage import Name` for nested modules; do not rewrite
+  those as bare `import package`.
+- Apply the same style in source, tests, notebooks, and README examples.
+
+```python
+# Good
+from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
+
+# Bad
+import anthropic
+import openai
+```
+
 ## Python object-oriented design
 
 Apply these principles proportionally. Do not introduce interfaces, factories,

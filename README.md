@@ -43,15 +43,15 @@ Construct the HTTP client supplied by the relevant SDK, pass it to that SDK's as
 inject the context-managed SDK client into the adapter:
 
 ```python
-import anthropic
-import openai
+from anthropic import AsyncAnthropic, DefaultAioHttpClient as AnthropicAioHttpClient
+from openai import AsyncOpenAI, DefaultAioHttpClient as OpenAIAioHttpClient
 
 from model_runtime import AnthropicAdapter, OpenAIAdapter
 
 
 async def use_openai_aiohttp() -> None:
-    http_client = openai.DefaultAioHttpClient()
-    async with openai.AsyncOpenAI(
+    http_client = OpenAIAioHttpClient()
+    async with AsyncOpenAI(
         http_client=http_client,
         max_retries=0,
     ) as client:
@@ -60,8 +60,8 @@ async def use_openai_aiohttp() -> None:
 
 
 async def use_anthropic_aiohttp() -> None:
-    http_client = anthropic.DefaultAioHttpClient()
-    async with anthropic.AsyncAnthropic(
+    http_client = AnthropicAioHttpClient()
+    async with AsyncAnthropic(
         http_client=http_client,
         max_retries=0,
     ) as client:

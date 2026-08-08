@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-import openai
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    AuthenticationError,
+    BadRequestError,
+    ConflictError,
+    InternalServerError,
+    NotFoundError,
+    PermissionDeniedError,
+    RateLimitError,
+    UnprocessableEntityError,
+)
 
 from .._http import (
     contains_error_marker,
@@ -44,21 +55,21 @@ class OpenAIErrorMetadataExtractor:
             return ProviderErrorKind.CONTENT_FILTER
         if cls._contains_content_filter(str(error)):
             return ProviderErrorKind.CONTENT_FILTER
-        if isinstance(error, openai.AuthenticationError | openai.PermissionDeniedError):
+        if isinstance(error, AuthenticationError | PermissionDeniedError):
             return ProviderErrorKind.AUTH
-        if isinstance(error, openai.RateLimitError):
+        if isinstance(error, RateLimitError):
             return ProviderErrorKind.RATE_LIMIT
-        if isinstance(error, openai.APITimeoutError):
+        if isinstance(error, APITimeoutError):
             return ProviderErrorKind.TIMEOUT
         if isinstance(
             error,
-            openai.BadRequestError
-            | openai.NotFoundError
-            | openai.ConflictError
-            | openai.UnprocessableEntityError,
+            BadRequestError
+            | NotFoundError
+            | ConflictError
+            | UnprocessableEntityError,
         ):
             return ProviderErrorKind.INVALID_REQUEST
-        if isinstance(error, openai.APIConnectionError | openai.InternalServerError):
+        if isinstance(error, APIConnectionError | InternalServerError):
             return ProviderErrorKind.UNAVAILABLE
         if status_code in {401, 403}:
             return ProviderErrorKind.AUTH

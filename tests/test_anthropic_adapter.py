@@ -6,10 +6,10 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass
 from types import TracebackType
 
-import anthropic
-import anthropic.types as anthropic_types
 import httpx
 import pytest
+from anthropic import RateLimitError as AnthropicSDKRateLimitError
+from anthropic import types as anthropic_types
 from anthropic.lib.streaming import ParsedMessageStopEvent
 from anthropic.types import (
     RawContentBlockDeltaEvent,
@@ -38,6 +38,7 @@ from model_runtime import (
     ToolDefinition,
     Usage,
 )
+from model_runtime.providers.anthropic import adapter as anthropic_adapter
 from model_runtime.providers.anthropic.transport import AnthropicStreamEvent
 
 
@@ -179,7 +180,7 @@ def test_constructs_sdk_client_with_retries_disabled(
         options.update(kwargs)
         return created
 
-    monkeypatch.setattr(anthropic, "AsyncAnthropic", make_client)
+    monkeypatch.setattr(anthropic_adapter, "AsyncAnthropic", make_client)
 
     adapter = AnthropicAdapter(
         api_key="test-key",
@@ -617,7 +618,7 @@ def test_maps_constructed_anthropic_sdk_exception() -> None:
         headers={"retry-after": "1.25"},
         json={"error": {"message": "slow down"}},
     )
-    source = anthropic.RateLimitError(
+    source = AnthropicSDKRateLimitError(
         "slow down",
         response=response,
         body={"error": {"message": "slow down"}},

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import anthropic
-import openai
 import pytest
+from anthropic import AsyncAnthropic, DefaultAioHttpClient as AnthropicAioHttpClient
+from openai import AsyncOpenAI, DefaultAioHttpClient as OpenAIAioHttpClient
 
 from model_runtime import AnthropicAdapter, OpenAIAdapter
 
@@ -17,10 +17,10 @@ pytest.importorskip(
 @pytest.mark.asyncio
 async def test_aiohttp_sdk_clients_close_their_http_clients() -> None:
     """Both SDK contexts close their injected aiohttp-based HTTP clients."""
-    openai_http_client = openai.DefaultAioHttpClient()
+    openai_http_client = OpenAIAioHttpClient()
     assert not openai_http_client.is_closed
 
-    async with openai.AsyncOpenAI(
+    async with AsyncOpenAI(
         api_key="test-key",
         http_client=openai_http_client,
         max_retries=0,
@@ -32,10 +32,10 @@ async def test_aiohttp_sdk_clients_close_their_http_clients() -> None:
 
     assert openai_http_client.is_closed
 
-    anthropic_http_client = anthropic.DefaultAioHttpClient()
+    anthropic_http_client = AnthropicAioHttpClient()
     assert not anthropic_http_client.is_closed
 
-    async with anthropic.AsyncAnthropic(
+    async with AsyncAnthropic(
         api_key="test-key",
         http_client=anthropic_http_client,
         max_retries=0,

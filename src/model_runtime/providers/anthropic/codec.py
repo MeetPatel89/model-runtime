@@ -7,7 +7,7 @@ import binascii
 from collections.abc import Mapping, Sequence
 from typing import Literal, cast
 
-import anthropic.types as anthropic_types
+from anthropic import types as anthropic_types
 from anthropic.lib.streaming import ParsedMessageStopEvent
 from anthropic.types import (
     Base64ImageSourceParam,

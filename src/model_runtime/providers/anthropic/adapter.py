@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-import anthropic
+import os
+
+from anthropic import AsyncAnthropic
 from anthropic.types import Message
 
 from ...errors import ModelRuntimeError
@@ -33,8 +35,8 @@ class AnthropicAdapter(
         if default_max_output_tokens <= 0:
             raise ValueError("default_max_output_tokens must be greater than zero")
         if client is None:
-            client = anthropic.AsyncAnthropic(
-                api_key=api_key,
+            client = AsyncAnthropic(
+                api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"),
                 auth_token=auth_token,
                 base_url=base_url,
                 max_retries=0,
