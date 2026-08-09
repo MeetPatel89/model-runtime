@@ -359,16 +359,29 @@ Most tests use fake transports and official SDK response models. The optional li
 constructs real SDK and HTTP clients but sends no requests; no test makes a network call.
 
 ```bash
-uv sync
-uv run pytest
-uv run ty check
-uv run mypy
-uvx ruff check .
-uvx ruff format --check .
+uv sync --locked --all-extras
+uv run --no-sync ruff format --check .
+uv run --no-sync ruff check .
+uv run --no-sync ty check
+uv run --no-sync mypy
+uv run --no-sync pytest
 ```
 
-To include and exercise the optional `aiohttp` transport, run `uv sync --extra aiohttp` before the
-same checks. The optional smoke test skips automatically when that extra is not installed.
+`--all-extras` installs and exercises the optional `aiohttp` transport. Without that extra, its
+lifecycle smoke test skips automatically. GitHub Actions runs the same locked quality suite for
+pull requests, pushes to `main`, and release tags, then builds and smoke-installs both distribution
+formats.
+
+## Releases
+
+Releases use stable `vMAJOR.MINOR.PATCH` Git tags and follow Semantic Versioning. The version in
+`pyproject.toml` must match the tag without its `v` prefix; tag CI rejects malformed or mismatched
+versions. Notable consumer-facing changes are collected under `Unreleased` in the
+[changelog](CHANGELOG.md), then moved into a dated version section when a release is tagged.
+
+CI validates release distributions but does not publish them or create a GitHub Release. On a tag,
+the wheel, source distribution, and their SHA-256 checksums are retained as workflow artifacts for
+30 days.
 
 ## Data handling and failure behavior
 
@@ -393,6 +406,8 @@ src/model_runtime/providers/anthropic/ Anthropic adapter, transport, codec, stre
 src/model_runtime/providers/openai/    OpenAI adapter, transport, codec, stream, and errors
 docs/end-to-end-request-flow.md        detailed OpenAI and Anthropic request flow walkthrough
 tests/                                 network-free runtime and provider contract tests
+CHANGELOG.md                           notable changes organized by release
+.github/workflows/ci.yml               locked quality and distribution validation
 AGENTS.md                              Codex-native repository instructions
 .cursor/rules/                         Cursor-native repository instructions
 ```
