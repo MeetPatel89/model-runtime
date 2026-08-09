@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from anthropic import AsyncAnthropic, DefaultAioHttpClient as AnthropicAioHttpClient
-from openai import AsyncOpenAI, DefaultAioHttpClient as OpenAIAioHttpClient
+from anthropic import AsyncAnthropic
+from anthropic import DefaultAioHttpClient as AnthropicAioHttpClient
+from openai import AsyncOpenAI
+from openai import DefaultAioHttpClient as OpenAIAioHttpClient
 
 from model_runtime import AnthropicAdapter, OpenAIAdapter
 

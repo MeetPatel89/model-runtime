@@ -63,10 +63,7 @@ class OpenAIErrorMetadataExtractor:
             return ProviderErrorKind.TIMEOUT
         if isinstance(
             error,
-            BadRequestError
-            | NotFoundError
-            | ConflictError
-            | UnprocessableEntityError,
+            BadRequestError | NotFoundError | ConflictError | UnprocessableEntityError,
         ):
             return ProviderErrorKind.INVALID_REQUEST
         if isinstance(error, APIConnectionError | InternalServerError):

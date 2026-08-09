@@ -25,6 +25,7 @@ dev = [
     "basedpyright>=1.31.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
+    "ty>=0.0.69",
 ]
 
 [tool.pytest.ini_options]
@@ -44,6 +45,13 @@ reportImplicitOverride = "error"
 reportUnnecessaryIsInstance = "none"
 reportUnnecessaryTypeIgnoreComment = "error"
 
+[tool.ty.src]
+include = ["src", "tests", "example.py"]
+
+[tool.ty.rules]
+missing-type-argument = "error"
+possibly-unresolved-reference = "warn"
+
 [tool.ruff]
 line-length = 88
 target-version = "py314"
@@ -58,7 +66,8 @@ select = [
     "N",
     "D",
     "C4",
-    "ANN"
+    "ANN",
+    "PYI",
 ]
 
 [tool.ruff.lint.pydocstyle]

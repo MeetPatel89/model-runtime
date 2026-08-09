@@ -209,8 +209,10 @@ Provider option mappings are copied into an immutable top-level view. Nested val
 unchanged so an adapter can pass provider payloads through without silently rewriting their
 representation. Values are validated as JSON-compatible when a request is constructed.
 
-Strict checking is enforced with BasedPyright in addition to Ruff's annotation rules. Explicit
-`Any`, inferred `Any`, unknown types, and unnecessary type-ignore comments fail the type check.
+Strict checking is enforced with [`ty`](https://docs.astral.sh/ty/) and BasedPyright, complemented
+by Ruff's annotation and stub rules. BasedPyright is retained for strict diagnostics that `ty`
+does not yet implement; explicit `Any`, inferred `Any`, unknown types, implicit overrides, and
+unnecessary type-ignore comments continue to fail that check.
 
 ## OpenAI Responses behavior
 
@@ -358,6 +360,7 @@ constructs real SDK and HTTP clients but sends no requests; no test makes a netw
 ```bash
 uv sync
 uv run pytest
+uv run ty check
 uv run basedpyright
 uvx ruff check .
 uvx ruff format --check .
