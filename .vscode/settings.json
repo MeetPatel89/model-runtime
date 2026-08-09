@@ -1,7 +1,11 @@
 {
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "python.languageServer": "None",
+  "python.analysis.typeCheckingMode": "off",
   "python.terminal.activateEnvironment": false,
   "python.terminal.activateEnvInCurrentTerminal": false,
+  "basedpyright.analysis.typeCheckingMode": "off",
+  "mypy-type-checker.importStrategy": "fromEnvironment",
   "[python]": {
     "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,
@@ -10,5 +14,6 @@
       "source.organizeImports.ruff": "explicit"
     }
   },
-  "ruff.configuration": "${workspaceFolder}/pyproject.toml"
+  "ruff.configuration": "${workspaceFolder}/pyproject.toml",
+  "ty.interpreter": ["${workspaceFolder}/.venv/bin/python"]
 }

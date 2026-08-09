@@ -209,10 +209,11 @@ Provider option mappings are copied into an immutable top-level view. Nested val
 unchanged so an adapter can pass provider payloads through without silently rewriting their
 representation. Values are validated as JSON-compatible when a request is constructed.
 
-Strict checking is enforced with [`ty`](https://docs.astral.sh/ty/) and BasedPyright, complemented
-by Ruff's annotation and stub rules. BasedPyright is retained for strict diagnostics that `ty`
-does not yet implement; explicit `Any`, inferred `Any`, unknown types, implicit overrides, and
-unnecessary type-ignore comments continue to fail that check.
+Strict checking is enforced with [`ty`](https://docs.astral.sh/ty/) and mypy, complemented by
+Ruff's annotation and stub rules. Mypy loads Pydantic's official plugin with constructor settings
+that preserve Pydantic's coercive runtime behavior while warning about required dynamic aliases.
+The checked-in VS Code configuration uses ty as the Python language server, runs mypy from the
+project environment, and disables Pylance/Pyright and BasedPyright type diagnostics.
 
 ## OpenAI Responses behavior
 
@@ -361,7 +362,7 @@ constructs real SDK and HTTP clients but sends no requests; no test makes a netw
 uv sync
 uv run pytest
 uv run ty check
-uv run basedpyright
+uv run mypy
 uvx ruff check .
 uvx ruff format --check .
 ```

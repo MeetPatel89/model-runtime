@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import cast
 
 from openai.types.responses import (
     EasyInputMessageParam,
@@ -387,6 +386,5 @@ class OpenAICodec:
                     "OpenAI provider option 'tools' must contain JSON objects",
                     provider="openai",
                 )
-            tool = cast(JsonObject, raw_tool)
-            provider_tools.append(dict(immutable_json_object(tool)))
+            provider_tools.append(dict(immutable_json_object(raw_tool)))
         return immutable_json_object(values), tuple(provider_tools)

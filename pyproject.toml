@@ -22,7 +22,8 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "basedpyright>=1.31.0",
+    "mypy>=2.3.0",
+    "pydantic>=2.13.4,<3.0.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "ty>=0.0.69",
@@ -33,17 +34,18 @@ addopts = "-ra"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
-[tool.basedpyright]
-include = ["src", "tests", "example.py"]
-pythonVersion = "3.14"
-venvPath = "."
-venv = ".venv"
-typeCheckingMode = "strict"
-reportAny = "error"
-reportExplicitAny = "error"
-reportImplicitOverride = "error"
-reportUnnecessaryIsInstance = "none"
-reportUnnecessaryTypeIgnoreComment = "error"
+[tool.mypy]
+files = ["src", "tests", "example.py"]
+python_version = "3.14"
+plugins = ["pydantic.mypy"]
+strict = true
+enable_error_code = ["explicit-override"]
+show_error_codes = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = false
+init_typed = false
+warn_required_dynamic_aliases = true
 
 [tool.ty.src]
 include = ["src", "tests", "example.py"]

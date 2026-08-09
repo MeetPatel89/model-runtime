@@ -81,8 +81,8 @@ class ModelRouter:
             if request is None:
                 raise ValueError("a request is required when the router has a selector")
             selected = self._selector(name, request)
-            if selected is None:
-                selected = name
+        if selected is None:
+            selected = name
         if isinstance(selected, ModelRoute):
             return selected
         try:

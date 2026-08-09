@@ -94,14 +94,14 @@ class AnthropicProviderOptions(Mapping[str, JsonValue]):
         return len(self._values)
 
     @classmethod
-    def _put_nested[T: JsonValue](
+    def _put_nested(
         cls,
         values: dict[str, JsonValue],
         *,
         key: str,
         value: _Option[JsonObject],
         shorthand_key: str,
-        shorthand: _Option[T],
+        shorthand: _Option[JsonValue],
     ) -> None:
         if not isinstance(value, _Unset) and not isinstance(shorthand, _Unset):
             raise ValueError(
