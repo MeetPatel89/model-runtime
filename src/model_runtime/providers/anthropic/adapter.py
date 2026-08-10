@@ -5,21 +5,17 @@ from __future__ import annotations
 import os
 
 from anthropic import AsyncAnthropic
-from anthropic.types import Message
 
 from ...errors import ModelRuntimeError
 from ...types import ModelCapabilities
 from ..base import ProviderAdapter
 from ..errors import StandardProviderErrorMapper
-from ._types import AnthropicRequest
 from .codec import AnthropicCodec
 from .errors import AnthropicErrorMetadataExtractor
-from .transport import AnthropicClientLike, AnthropicStreamEvent, AnthropicTransport
+from .transport import AnthropicClientLike, AnthropicTransport
 
 
-class AnthropicAdapter(
-    ProviderAdapter[AnthropicRequest, Message, AnthropicStreamEvent]
-):
+class AnthropicAdapter(ProviderAdapter):
     """Anthropic Messages API integration using the official async SDK."""
 
     def __init__(
