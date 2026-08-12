@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-12
+
+### Added
+
+- Add the async-first `ChatSession` conversation layer with system context,
+  immutable history snapshots, atomic turn recording, transient generation
+  context, and guarded synchronous wrappers.
+- Add frozen `GenerationRecord` telemetry values that retain the normalized and
+  raw model response, resolved model, logical route/provider name, response ID,
+  and latency.
+- Add the optional `ModelCatalog` protocol and asynchronous model discovery to
+  the OpenAI and Anthropic adapters through their existing SDK clients and error
+  mappers.
+
+## [0.1.0] - 2026-08-10
+
 ### Added
 
 - Add an async, provider-independent model runtime with normalized completion and

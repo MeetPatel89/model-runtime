@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Awaitable
+from typing import Protocol, cast
 
 from anthropic import AsyncAnthropic
-from anthropic.types import Message
+from anthropic.pagination import AsyncPage
+from anthropic.types import Message, ModelInfo
 
 from ...errors import ModelRuntimeError
 from ...types import ModelCapabilities
@@ -15,6 +18,23 @@ from ._types import AnthropicRequest
 from .codec import AnthropicCodec
 from .errors import AnthropicErrorMetadataExtractor
 from .transport import AnthropicClientLike, AnthropicStreamEvent, AnthropicTransport
+
+
+class _AnthropicModelsEndpoint(Protocol):
+    """The model-listing portion of the async Anthropic SDK."""
+
+    def list(self) -> Awaitable[AsyncPage[ModelInfo]]:
+        """Return one asynchronously loaded model page."""
+        ...
+
+
+class _AnthropicModelCatalogClient(Protocol):
+    """Client shape needed only for optional model discovery."""
+
+    @property
+    def models(self) -> _AnthropicModelsEndpoint:
+        """Anthropic models resource."""
+        ...
 
 
 class AnthropicAdapter(
@@ -61,6 +81,18 @@ class AnthropicAdapter(
     def client(self) -> AnthropicClientLike:
         """Underlying official or structurally compatible async client."""
         return self._anthropic_transport.client
+
+    async def list_models(self) -> list[str]:
+        """List model identifiers visible to the configured Anthropic client."""
+        try:
+            client = cast(_AnthropicModelCatalogClient, self.client)
+            page = await client.models.list()
+            return sorted(model.id for model in page.data)
+        except ModelRuntimeError:
+            raise
+        except Exception as exc:
+            error = self.translate_error(exc)
+            raise error from exc
 
     @staticmethod
     def translate_error(error: Exception) -> ModelRuntimeError:

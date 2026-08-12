@@ -10,7 +10,7 @@ from .errors import (
     RequestTimeout,
 )
 from .json_types import JsonObject, JsonPrimitive, JsonValue
-from .model import ChatModel
+from .model import ChatModel, ModelCatalog
 from .providers import (
     AnthropicAdapter,
     AnthropicProviderOptions,
@@ -30,6 +30,7 @@ from .providers import (
 from .retry import RetryPolicy
 from .router import ModelRoute, ModelRouter, RouteSelector
 from .runtime import ModelRuntime
+from .session import ChatSession, GenerationRecord, run_sync
 from .tracing import NoOpTraceObserver, TraceObserver
 from .types import (
     ContentPart,
@@ -57,6 +58,7 @@ __all__ = [
     "AnthropicProviderOptions",
     "AuthError",
     "ChatModel",
+    "ChatSession",
     "ContentFilterError",
     "ContentPart",
     "FinishReason",
@@ -68,6 +70,7 @@ __all__ = [
     "JsonValue",
     "Message",
     "MessageRole",
+    "ModelCatalog",
     "ModelCapabilities",
     "ModelRequest",
     "ModelResponse",
@@ -101,6 +104,8 @@ __all__ = [
     "ToolDefinition",
     "TraceObserver",
     "Usage",
+    "GenerationRecord",
+    "run_sync",
     "ErrorMetadataExtractor",
     "StandardProviderErrorMapper",
 ]

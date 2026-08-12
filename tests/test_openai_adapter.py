@@ -57,11 +57,51 @@ class FakeResponses:
         return self.result
 
 
+@dataclass(frozen=True)
+class FakeModelInfo:
+    """Minimal provider model descriptor."""
+
+    id: str
+
+
+@dataclass(frozen=True)
+class FakeModelsPage:
+    """Minimal SDK-shaped model page."""
+
+    data: list[FakeModelInfo]
+
+
+class FakeModels:
+    """Recording async model-discovery endpoint."""
+
+    def __init__(
+        self,
+        model_ids: Sequence[str] = (),
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self._model_ids = model_ids
+        self._error = error
+        self.calls = 0
+
+    async def list(self) -> FakeModelsPage:
+        """Return configured identifiers or raise the configured SDK error."""
+        self.calls += 1
+        if self._error is not None:
+            raise self._error
+        return FakeModelsPage([FakeModelInfo(model_id) for model_id in self._model_ids])
+
+
 class FakeClient:
     """Structurally compatible OpenAI client for offline tests."""
 
-    def __init__(self, responses: FakeResponses) -> None:
+    def __init__(
+        self,
+        responses: FakeResponses,
+        models: FakeModels | None = None,
+    ) -> None:
         self.responses = responses
+        self.models = models or FakeModels()
 
 
 def fake_client(result: OpenAICreateResult) -> tuple[FakeClient, FakeResponses]:
@@ -169,6 +209,34 @@ def test_constructs_sdk_client_with_retries_disabled(
         "organization": "org-test",
         "project": "project-test",
     }
+
+
+@pytest.mark.asyncio
+async def test_lists_sorted_models_through_async_sdk_client() -> None:
+    """Model discovery uses the adapter's existing asynchronous client."""
+    models = FakeModels(("gpt-z", "gpt-a"))
+    client, _ = fake_client(openai_response())
+    client.models = models
+
+    discovered = await OpenAIAdapter(client=client).list_models()
+
+    assert discovered == ["gpt-a", "gpt-z"]
+    assert models.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_model_discovery_maps_openai_errors() -> None:
+    """Discovery failures cross the same normalized error boundary as requests."""
+    sdk_error = RuntimeError("discovery failed")
+    models = FakeModels(error=sdk_error)
+    client, _ = fake_client(openai_response())
+    client.models = models
+
+    with pytest.raises(ProviderUnavailableError) as captured:
+        await OpenAIAdapter(client=client).list_models()
+
+    assert captured.value.provider == "openai"
+    assert captured.value.__cause__ is sdk_error
 
 
 def test_openai_provider_options_match_responses_and_remain_extensible() -> None:

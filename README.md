@@ -3,7 +3,8 @@
 `model-runtime` is an initial, async-first and strictly typed invocation layer for applications
 that need to call LLMs without spreading provider SDK details through application code. It
 provides normalized messages, responses, streams, errors, routing, retries, timeouts, tracing
-hooks, and token accounting while retaining provider-specific JSON options and raw SDK payloads.
+hooks, token accounting, and in-process conversation sessions while retaining provider-specific
+JSON options and raw SDK payloads.
 
 Built-in integrations use the [OpenAI Responses
 API](https://developers.openai.com/api/docs/guides/migrate-to-responses) and the [Anthropic
@@ -150,30 +151,83 @@ request = ModelRequest.from_text(
 response = await runtime.complete("claude", request)
 ```
 
+## Stateful conversation sessions
+
+`ChatSession` adds app-agnostic system context, visible turn history, and generation telemetry on
+top of one logical runtime route. It is provisional infrastructure for simple in-process
+conversations; durable or shared memory belongs in a dedicated memory library.
+
+```python
+from model_runtime import ChatSession, Message
+
+session = ChatSession(
+    runtime,
+    "chat",
+    system_prompt="Answer clearly and briefly.",
+)
+
+
+async def ask() -> None:
+    record = await session.complete_turn("Why is the sky blue?")
+    print(record.text)
+    print(record.response.usage)
+
+
+# Synchronous applications can use the guarded bridge when no event loop is active.
+answer = session.chat_sync("What changes at sunset?")
+```
+
+`complete_turn` and `chat` are async-native. `complete_turn_sync` and `chat_sync` use
+`asyncio.run` and raise a clear `RuntimeError` if called from a thread that already has a running
+event loop; async callers should await the native methods instead. Successful turns append the
+canonical user message and full normalized assistant message atomically. A failed call leaves
+history and the generation log unchanged.
+
+Pass a separate user-role `generation_message` to add transient context while keeping the
+canonical question in visible history:
+
+```python
+record = await session.complete_turn(
+    Message.user("What is the escalation threshold?"),
+    generation_message=Message.user(
+        "What is the escalation threshold?\n\nRetrieved context: Severity two."
+    ),
+)
+```
+
+`session.history` and `session.generation_log` return tuple snapshots. Each frozen
+`GenerationRecord` exposes the response, text, logical route, resolved model, route-derived
+provider name, elapsed milliseconds, and provider response ID when present. The record retains
+`ModelResponse.raw` as-is; callers own any validation, redaction, serialization, or copying of
+provider-native values.
+
 ## Architecture
 
-`ModelRuntime` receives a logical model name. `ModelRouter` resolves it to a `ChatModel` and the
-provider's model ID. The runtime owns request timeouts, retry policy, tracing notifications, and
-usage totals. Provider SDK retries stay disabled so there is one visible retry owner.
+`ChatSession` optionally owns conversation state around `ModelRuntime`. `ModelRuntime` receives a
+logical model name, and `ModelRouter` resolves it to a `ChatModel` and the provider's model ID. The
+runtime owns request timeouts, retry policy, tracing notifications, and usage totals. Provider SDK
+retries stay disabled so there is one visible retry owner.
 
 For a step-by-step walkthrough of one complete and streaming call through both OpenAI and
 Anthropic — including encode/decode, tool rounds, retries, and sequence diagrams — see
 [`docs/end-to-end-request-flow.md`](docs/end-to-end-request-flow.md).
 
 ```text
-application -> ModelRuntime -> ModelRouter -> ChatModel / ProviderAdapter
-                 |                |                    |
-                 |                |                    +-- ProviderCodec + StreamDecoder
-                 |                |                    +-- ProviderErrorMapper
-                 |                |                    +-- ProviderTransport -> provider SDK
-                 |                +-- logical name -> provider model ID
-                 +-- retry / timeout / tracing / usage
+application -> ChatSession -> ModelRuntime -> ModelRouter -> ChatModel / ProviderAdapter
+                    |            |                |                    |
+                    |            |                |                    +-- ProviderCodec + StreamDecoder
+                    |            |                |                    +-- ProviderErrorMapper
+                    |            |                |                    +-- ProviderTransport -> provider SDK
+                    |            |                +-- logical name -> provider model ID
+                    |            +-- retry / timeout / tracing / usage
+                    +-- system prompt / turn history / generation log / sync bridge
 ```
 
 The reusable provider components have focused responsibilities:
 
 | Component | Responsibility |
 | --- | --- |
+| `ChatSession` | In-process system context, atomic conversation turns, generation records, and sync bridge |
 | `ProviderAdapter` | Common completion/stream lifecycle and normalized exception boundary |
 | `ProviderTransport` | Typed SDK invocation and transport stream cleanup |
 | `ProviderCodec` | Native request/response translation and per-stream decoder creation |
@@ -201,6 +255,8 @@ The normalized library code does not expose `Any`:
   tools with normalized function tools.
 - `ModelResponse.raw` and error details are `object | None` because the concrete value belongs to
   the selected SDK. Unlike `Any`, `object` requires a caller to narrow or cast before access.
+- `GenerationRecord` retains the complete `ModelResponse`, including its provider-native `raw`
+  value, without a Pydantic or JSON round trip.
 - Flexible constructor sequences are normalized to canonical tuple attributes. Reading
   `Message.content`, `ModelRequest.messages`, `ModelRequest.stop`, or `StreamEnd.usage` does not
   retain a constructor-only union.
@@ -323,6 +379,18 @@ router = ModelRouter(
 Selection policy belongs in that application callable; the router only stores and resolves
 routes.
 
+`ModelCatalog` is a separate optional protocol, so custom `ChatModel` adapters and test fakes are
+not required to support discovery. The built-in adapters implement it asynchronously through the
+same injected SDK client used for generation:
+
+```python
+openai_models = await OpenAIAdapter().list_models()
+anthropic_models = await AnthropicAdapter().list_models()
+```
+
+Discovery failures use the same `ModelRuntimeError` taxonomy and provider error mapping as model
+requests.
+
 ## Adding a provider
 
 Implement the three small structural protocols and assemble `ProviderAdapter`; component classes
@@ -385,11 +453,13 @@ the wheel, source distribution, and their SHA-256 checksums are retained as work
 
 ## Data handling and failure behavior
 
-Requests are sent directly to the provider selected by the router. This package does not persist
-prompts, responses, credentials, or traces itself. OpenAI Responses are stored by the provider by
-default; pass `OpenAIProviderOptions(store=False)` when provider-side storage is not desired. An
-injected `TraceObserver` controls its own data handling. Anthropic documents the standard Messages
-API's current retention behavior in its [API data retention
+Requests are sent directly to the provider selected by the router. This package does not durably
+persist prompts, responses, credentials, or traces. A `ChatSession` retains normalized visible
+messages and generation records, including raw provider responses, in process until the session is
+discarded; `clear_history()` does not clear its generation log. OpenAI Responses are stored by the
+provider by default; pass `OpenAIProviderOptions(store=False)` when provider-side storage is not
+desired. An injected `TraceObserver` controls its own data handling. Anthropic documents the
+standard Messages API's current retention behavior in its [API data retention
 guide](https://platform.claude.com/docs/en/manage-claude/api-and-data-retention); provider-native
 tools can have different policies. `ModelResponse.raw`, error details, and tracing callbacks may
 contain provider payloads, so applications should apply their own redaction and retention policies.
@@ -399,7 +469,7 @@ error boundary.
 ## Project structure
 
 ```text
-src/model_runtime/                     domain types, runtime, router, retry, and tracing
+src/model_runtime/                     domain types, runtime, router, session, retry, and tracing
 src/model_runtime/providers/base.py    reusable typed provider orchestration and protocols
 src/model_runtime/providers/errors.py  shared provider error normalization
 src/model_runtime/providers/anthropic/ Anthropic adapter, transport, codec, stream, and errors
@@ -431,6 +501,8 @@ AGENTS.md                              Codex-native repository instructions
   separate developer role. Mid-conversation system messages remain subject to model support and
   Anthropic's placement rules.
 - Usage totals are in memory and reset when the process exits.
+- `ChatSession` memory and telemetry are in process only; persistence, concurrency control, and
+  multi-participant conversation semantics are outside this provisional layer.
 - The normalized image part accepts URLs and data URLs; file loading is left to the application.
 - Provider-specific response fields are available through `ModelResponse.raw`, not normalized.
 - An injected OpenAI-compatible client is assumed to have its own SDK retries disabled.

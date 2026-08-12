@@ -26,3 +26,12 @@ class ChatModel(Protocol):
     ) -> AsyncIterator[StreamEvent]:
         """Yield normalized deltas followed by exactly one ``StreamEnd``."""
         ...
+
+
+@runtime_checkable
+class ModelCatalog(Protocol):
+    """Optional model-discovery behavior exposed by supporting adapters."""
+
+    async def list_models(self) -> list[str]:
+        """Return provider model identifiers available to the client."""
+        ...

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from typing import Protocol, cast
+
 from openai import AsyncOpenAI
+from openai.pagination import AsyncPage
+from openai.types import Model
 from openai.types.responses import Response, ResponseStreamEvent
 
 from ...errors import ModelRuntimeError
@@ -13,6 +18,23 @@ from ._types import OpenAIRequest
 from .codec import OpenAICodec
 from .errors import OpenAIErrorMetadataExtractor
 from .transport import OpenAIClientLike, OpenAITransport
+
+
+class _OpenAIModelsEndpoint(Protocol):
+    """The model-listing portion of the async OpenAI SDK."""
+
+    def list(self) -> Awaitable[AsyncPage[Model]]:
+        """Return one asynchronously loaded model page."""
+        ...
+
+
+class _OpenAIModelCatalogClient(Protocol):
+    """Client shape needed only for optional model discovery."""
+
+    @property
+    def models(self) -> _OpenAIModelsEndpoint:
+        """OpenAI models resource."""
+        ...
 
 
 class OpenAIAdapter(ProviderAdapter[OpenAIRequest, Response, ResponseStreamEvent]):
@@ -55,6 +77,18 @@ class OpenAIAdapter(ProviderAdapter[OpenAIRequest, Response, ResponseStreamEvent
     def client(self) -> OpenAIClientLike:
         """Underlying official or structurally compatible async client."""
         return self._openai_transport.client
+
+    async def list_models(self) -> list[str]:
+        """List model identifiers visible to the configured OpenAI client."""
+        try:
+            client = cast(_OpenAIModelCatalogClient, self.client)
+            page = await client.models.list()
+            return sorted(model.id for model in page.data)
+        except ModelRuntimeError:
+            raise
+        except Exception as exc:
+            error = self.translate_error(exc)
+            raise error from exc
 
     @staticmethod
     def translate_error(error: Exception) -> ModelRuntimeError:

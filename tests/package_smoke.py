@@ -5,7 +5,13 @@ from __future__ import annotations
 from importlib.metadata import version
 from sys import argv
 
-from model_runtime import AnthropicAdapter, ModelRuntime, OpenAIAdapter
+from model_runtime import (
+    AnthropicAdapter,
+    ChatSession,
+    GenerationRecord,
+    ModelRuntime,
+    OpenAIAdapter,
+)
 
 
 def main() -> None:
@@ -21,7 +27,13 @@ def main() -> None:
             f"expected version {expected_version!r}"
         )
 
-    public_classes = (AnthropicAdapter, ModelRuntime, OpenAIAdapter)
+    public_classes = (
+        AnthropicAdapter,
+        ChatSession,
+        GenerationRecord,
+        ModelRuntime,
+        OpenAIAdapter,
+    )
     if not all(isinstance(public_class, type) for public_class in public_classes):
         raise RuntimeError("representative public exports are not classes")
 

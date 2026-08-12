@@ -152,11 +152,51 @@ class FakeMessages:
         return self.stream_manager
 
 
+@dataclass(frozen=True)
+class FakeModelInfo:
+    """Minimal provider model descriptor."""
+
+    id: str
+
+
+@dataclass(frozen=True)
+class FakeModelsPage:
+    """Minimal SDK-shaped model page."""
+
+    data: list[FakeModelInfo]
+
+
+class FakeModels:
+    """Recording async model-discovery endpoint."""
+
+    def __init__(
+        self,
+        model_ids: Sequence[str] = (),
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self._model_ids = model_ids
+        self._error = error
+        self.calls = 0
+
+    async def list(self) -> FakeModelsPage:
+        """Return configured identifiers or raise the configured SDK error."""
+        self.calls += 1
+        if self._error is not None:
+            raise self._error
+        return FakeModelsPage([FakeModelInfo(model_id) for model_id in self._model_ids])
+
+
 class FakeClient:
     """Structurally compatible Anthropic client for offline tests."""
 
-    def __init__(self, messages: FakeMessages) -> None:
+    def __init__(
+        self,
+        messages: FakeMessages,
+        models: FakeModels | None = None,
+    ) -> None:
         self.messages = messages
+        self.models = models or FakeModels()
 
 
 def fake_client(
@@ -195,6 +235,34 @@ def test_constructs_sdk_client_with_retries_disabled(
         "auth_token": "test-token",
         "base_url": "https://api.anthropic.test",
     }
+
+
+@pytest.mark.asyncio
+async def test_lists_sorted_models_through_async_sdk_client() -> None:
+    """Model discovery uses the adapter's existing asynchronous client."""
+    models = FakeModels(("claude-z", "claude-a"))
+    client, _ = fake_client(anthropic_message())
+    client.models = models
+
+    discovered = await AnthropicAdapter(client=client).list_models()
+
+    assert discovered == ["claude-a", "claude-z"]
+    assert models.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_model_discovery_maps_anthropic_errors() -> None:
+    """Discovery failures cross the same normalized error boundary as requests."""
+    sdk_error = RuntimeError("discovery failed")
+    models = FakeModels(error=sdk_error)
+    client, _ = fake_client(anthropic_message())
+    client.models = models
+
+    with pytest.raises(ProviderUnavailableError) as captured:
+        await AnthropicAdapter(client=client).list_models()
+
+    assert captured.value.provider == "anthropic"
+    assert captured.value.__cause__ is sdk_error
 
 
 def test_anthropic_provider_options_are_typed_and_extensible() -> None:
