@@ -85,7 +85,6 @@ class AnthropicTransport:
                 "completion transport received a streaming Anthropic request",
                 provider="anthropic",
             )
-        print("request.as_kwargs()", request.as_kwargs())
         result = await self._endpoint.create(**request.as_kwargs())
         if not isinstance(result, Message):
             raise ProviderUnavailableError(
