@@ -30,6 +30,12 @@ project, and a custom base URL can instead be passed to `OpenAIAdapter`. This pa
 global configuration of its own. Likewise, the Anthropic SDK reads `ANTHROPIC_API_KEY`; an API key,
 auth token, and custom base URL can instead be passed to `AnthropicAdapter`.
 
+### Local Langfuse backend
+
+[`observability/README.md`](observability/README.md) contains the Phase 0 local Langfuse v4
+Docker Compose stack and a standalone OTLP ingestion smoke test. This phase provisions only the
+backend: it does not add OpenTelemetry dependencies to `model-runtime` or instrument runtime calls.
+
 ### Optional aiohttp transport
 
 Both provider SDKs use `httpx` asynchronously by default. The SDK and adapter APIs remain async
@@ -475,6 +481,7 @@ src/model_runtime/providers/errors.py  shared provider error normalization
 src/model_runtime/providers/anthropic/ Anthropic adapter, transport, codec, stream, and errors
 src/model_runtime/providers/openai/    OpenAI adapter, transport, codec, stream, and errors
 docs/end-to-end-request-flow.md        detailed OpenAI and Anthropic request flow walkthrough
+observability/                         Phase 0 local Langfuse stack and standalone OTLP smoke test
 tests/                                 network-free runtime and provider contract tests
 CHANGELOG.md                           notable changes organized by release
 .github/workflows/ci.yml               locked quality and distribution validation
@@ -501,6 +508,8 @@ AGENTS.md                              Codex-native repository instructions
   separate developer role. Mid-conversation system messages remain subject to model support and
   Anthropic's placement rules.
 - Usage totals are in memory and reset when the process exits.
+- The Phase 0 Langfuse stack accepts a standalone smoke-test span but runtime calls are not yet
+  instrumented for OpenTelemetry.
 - `ChatSession` memory and telemetry are in process only; persistence, concurrency control, and
   multi-participant conversation semantics are outside this provisional layer.
 - The normalized image part accepts URLs and data URLs; file loading is left to the application.

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add the Phase 0 local Langfuse v4 Docker Compose backend, environment template,
+  component guide, and standalone direct-OTLP ingestion smoke test.
+
 ### Fixed
 
 - Remove a leftover debug `print` of Anthropic request kwargs from completion
