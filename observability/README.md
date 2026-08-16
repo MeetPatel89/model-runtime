@@ -1,9 +1,10 @@
-# Phase 0: local Langfuse backend
+# Local Langfuse backend and Phase 1 OTel instrumentation
 
-This directory implements only Phase 0 of the observability plan: a local
-Langfuse backend and one standalone OTLP ingestion smoke test. It does not
-instrument `ModelRuntime`, add package dependencies, capture prompts or
-responses, run evaluations, or introduce an OpenTelemetry Collector.
+This directory implements Phase 0 and Phase 1 of the observability plan: a
+local Langfuse backend, one standalone OTLP ingestion smoke test, and optional
+OpenTelemetry instrumentation for `ModelRuntime`. It does not capture prompts
+or responses, run evaluations, add Langfuse-native session/user attributes, or
+introduce an OpenTelemetry Collector.
 
 The original plan was written for Langfuse v3. The official self-hosting stack
 now uses Langfuse v4, so this compose file follows the current v4 images and
@@ -60,23 +61,78 @@ be handled like any other credential.
 
 ## Verify OTLP ingestion
 
-The smoke test has inline `uv` dependencies, so it does not change
-`model-runtime` or add an `otel` package extra. It constructs one plain OTel
-span and exports it directly to Langfuse using OTLP/HTTP with Basic auth:
+The smoke test has inline `uv` dependencies and remains isolated from the
+project environment. It constructs one plain OTel span and exports it directly
+to Langfuse using OTLP/HTTP with Basic auth:
 
 ```bash
 uv run observability/smoke_test.py
 ```
 
 The OpenTelemetry imports are supplied by that isolated script environment,
-not the project's `.venv`. The script therefore includes analyzer directives
-that suppress only missing-import diagnostics; checks run inside the script
-environment still analyze the installed packages normally.
+not the project's `.venv` unless the `otel` extra is installed there. The
+script therefore includes analyzer directives that suppress only missing-import
+diagnostics; checks run inside the script environment still analyze the
+installed packages normally.
 
 The command prints the 32-character trace ID after export. Open the Tracing
 view in Langfuse and locate the trace named `manual OTLP smoke test`. The span
 has two deliberately non-GenAI attributes (`smoke_test.phase` and
-`smoke_test.purpose`); GenAI semantic conventions begin in Phase 1.
+`smoke_test.purpose`); runtime spans use GenAI semantic conventions as described
+below.
+
+## Trace model-runtime calls
+
+Install the optional dependencies from the repository root:
+
+```bash
+uv sync --extra otel
+```
+
+The executable [`example.py`](../example.py) loads provider settings from the
+root `.env` when present and Langfuse settings from `observability/.env`. It
+requires `OPENAI_API_KEY`, `OPENAI_MODEL`, `LANGFUSE_PUBLIC_KEY`, and
+`LANGFUSE_SECRET_KEY`; `LANGFUSE_BASE_URL` defaults to
+`http://localhost:3000`. Run it after the local stack is healthy:
+
+```bash
+uv run --extra otel python example.py
+```
+
+The application creates a `TracerProvider`, `BatchSpanProcessor`, and OTLP/HTTP
+exporter, then injects the provider's tracer into `OTelTraceObserver`. The
+library does not install or mutate a global tracer provider. The example sends
+traces to `/api/public/otel/v1/traces` using Basic auth and the
+`x-langfuse-ingestion-version: 4` header, and shuts its provider down so the
+batch processor flushes before process exit.
+
+Each completed runtime call produces one client span named `chat <model-id>`.
+The span covers the runtime's full logical call, including any retries, and
+records these values without sending request or response content:
+
+| Attribute | Meaning |
+| --- | --- |
+| `gen_ai.operation.name` | The normalized `chat` operation. |
+| `gen_ai.provider.name` | The provider explicitly configured on the observer. |
+| `gen_ai.request.model` | The provider model selected by the router. |
+| `gen_ai.request.temperature` | Requested temperature, when set. |
+| `gen_ai.request.max_tokens` | Requested maximum output tokens, when set. |
+| `gen_ai.response.model` | Provider-reported response model, when available. |
+| `gen_ai.response.finish_reasons` | Normalized terminal finish reason. |
+| `gen_ai.usage.input_tokens` | Total normalized input tokens, including cached input. |
+| `gen_ai.usage.output_tokens` | Total normalized output tokens. |
+| `gen_ai.usage.cache_read.input_tokens` | Cached input tokens, when nonzero. |
+| `model_runtime.latency_ms` | End-to-end logical runtime latency, including retries. |
+
+Successful spans have OTel `OK` status. Terminal failures have `ERROR` status,
+an `error.type` attribute, and a standard exception event. Observer failures
+remain isolated by `ModelRuntime` and cannot turn a successful model call into
+a failure. Open spans are correlated through a per-observer `ContextVar`, so
+interleaved calls in separate async tasks do not finish one another's spans.
+
+The observer is imported from `model_runtime.observability`. Importing the base
+`model_runtime` package still works without the `otel` extra; importing its OTel
+integration without the extra raises an installation hint.
 
 If export returns `401`, confirm the public and secret keys belong to the same
 project. If it cannot connect, check `docker compose ... ps` and inspect logs:

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add the Phase 0 local Langfuse v4 Docker Compose backend, environment template,
   component guide, and standalone direct-OTLP ingestion smoke test.
+- Add optional OpenTelemetry instrumentation with GenAI semantic-convention
+  attributes, direct Langfuse export in the example, and network-free tests.
 
 ### Fixed
 

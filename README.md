@@ -32,9 +32,17 @@ auth token, and custom base URL can instead be passed to `AnthropicAdapter`.
 
 ### Local Langfuse backend
 
-[`observability/README.md`](observability/README.md) contains the Phase 0 local Langfuse v4
-Docker Compose stack and a standalone OTLP ingestion smoke test. This phase provisions only the
-backend: it does not add OpenTelemetry dependencies to `model-runtime` or instrument runtime calls.
+[`observability/README.md`](observability/README.md) contains the local Langfuse v4 Docker Compose
+stack, a standalone OTLP ingestion smoke test, and the Phase 1 runtime instrumentation guide.
+OpenTelemetry remains optional:
+
+```bash
+uv sync --extra otel
+```
+
+Import `OTelTraceObserver` from `model_runtime.observability`, inject an application-owned OTel
+`Tracer`, and pass the observer to `ModelRuntime`. The base installation and `import model_runtime`
+do not require OpenTelemetry.
 
 ### Optional aiohttp transport
 
@@ -92,53 +100,41 @@ for details.
 
 ## Complete and streaming calls
 
-The repository's [`example.py`](example.py) runs with `uv run python example.py`:
+The repository's [`example.py`](example.py) sends complete and streaming calls to OpenAI and
+exports one span for each finished logical call to the local Langfuse backend. After starting
+Langfuse and configuring the environment as described in the observability guide, run:
+
+```bash
+uv run --extra otel python example.py
+```
+
+The application owns OTel setup and shutdown; `ModelRuntime` receives only the observer:
 
 ```python
-import asyncio
-import os
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-from model_runtime import (
-    Message,
-    ModelRequest,
-    ModelRouter,
-    ModelRuntime,
-    OpenAIAdapter,
-    OpenAIProviderOptions,
-    StreamEnd,
-    TextDelta,
+from model_runtime import ModelRuntime
+from model_runtime.observability import OTelTraceObserver
+
+
+tracer_provider = TracerProvider()
+tracer_provider.add_span_processor(BatchSpanProcessor(langfuse_exporter))
+tracer = tracer_provider.get_tracer("my_application")
+runtime = ModelRuntime(
+    router,
+    observer=OTelTraceObserver(tracer, provider_name="openai"),
 )
 
-
-adapter = OpenAIAdapter()
-router = ModelRouter().register("chat", adapter, os.environ["OPENAI_MODEL"])
-runtime = ModelRuntime(router)
-
-
-async def main() -> None:
-    openai_options = OpenAIProviderOptions(store=False, reasoning_effort="low")
-    request = ModelRequest(
-        messages=(
-            Message.system("Answer clearly and briefly."),
-            Message.user("Why is the sky blue?"),
-        ),
-        timeout=30,
-        provider_options=openai_options,
-    )
-
+try:
     response = await runtime.complete("chat", request)
-    print(response.text)
-    print(response.usage)
-
-    async for event in runtime.stream("chat", request):
-        if isinstance(event, TextDelta):
-            print(event.delta, end="", flush=True)
-        elif isinstance(event, StreamEnd):
-            print(f"\nstream usage: {event.usage}")
-
-
-asyncio.run(main())
+finally:
+    tracer_provider.shutdown()
 ```
+
+Here `router`, `request`, and `langfuse_exporter` are application values; the executable example
+shows their complete construction, including Basic-auth OTLP/HTTP exporter configuration.
+`provider_name` is explicit because a provider cannot be inferred reliably from its model ID.
 
 `runtime.total_usage` and `runtime.usage_by_model` contain process-local totals for successfully
 completed calls and streams. A stream is counted after its final `StreamEnd` is received.
@@ -441,10 +437,10 @@ uv run --no-sync mypy
 uv run --no-sync pytest
 ```
 
-`--all-extras` installs and exercises the optional `aiohttp` transport. Without that extra, its
-lifecycle smoke test skips automatically. GitHub Actions runs the same locked quality suite for
-pull requests, pushes to `main`, and release tags, then builds and smoke-installs both distribution
-formats.
+`--all-extras` installs and exercises the optional `aiohttp` transport and OpenTelemetry observer.
+Without an optional extra, its corresponding tests skip automatically. GitHub Actions runs the
+same locked quality suite for pull requests, pushes to `main`, and release tags, then builds and
+smoke-installs both distribution formats.
 
 ## Releases
 
@@ -464,8 +460,11 @@ persist prompts, responses, credentials, or traces. A `ChatSession` retains norm
 messages and generation records, including raw provider responses, in process until the session is
 discarded; `clear_history()` does not clear its generation log. OpenAI Responses are stored by the
 provider by default; pass `OpenAIProviderOptions(store=False)` when provider-side storage is not
-desired. An injected `TraceObserver` controls its own data handling. Anthropic documents the
-standard Messages API's current retention behavior in its [API data retention
+desired. An injected `TraceObserver` controls its own data handling. `OTelTraceObserver` records
+model identifiers, selected request parameters, finish reasons, token usage, latency, and terminal
+exception details, but does not record prompt or response content. Its application-owned exporter
+determines where those spans are transmitted and retained. Anthropic documents the standard
+Messages API's current retention behavior in its [API data retention
 guide](https://platform.claude.com/docs/en/manage-claude/api-and-data-retention); provider-native
 tools can have different policies. `ModelResponse.raw`, error details, and tracing callbacks may
 contain provider payloads, so applications should apply their own redaction and retention policies.
@@ -476,12 +475,13 @@ error boundary.
 
 ```text
 src/model_runtime/                     domain types, runtime, router, session, retry, and tracing
+src/model_runtime/observability/       optional OpenTelemetry TraceObserver integration
 src/model_runtime/providers/base.py    reusable typed provider orchestration and protocols
 src/model_runtime/providers/errors.py  shared provider error normalization
 src/model_runtime/providers/anthropic/ Anthropic adapter, transport, codec, stream, and errors
 src/model_runtime/providers/openai/    OpenAI adapter, transport, codec, stream, and errors
 docs/end-to-end-request-flow.md        detailed OpenAI and Anthropic request flow walkthrough
-observability/                         Phase 0 local Langfuse stack and standalone OTLP smoke test
+observability/                         local Langfuse stack, OTLP smoke test, and usage guide
 tests/                                 network-free runtime and provider contract tests
 CHANGELOG.md                           notable changes organized by release
 .github/workflows/ci.yml               locked quality and distribution validation
@@ -508,8 +508,11 @@ AGENTS.md                              Codex-native repository instructions
   separate developer role. Mid-conversation system messages remain subject to model support and
   Anthropic's placement rules.
 - Usage totals are in memory and reset when the process exits.
-- The Phase 0 Langfuse stack accepts a standalone smoke-test span but runtime calls are not yet
-  instrumented for OpenTelemetry.
+- Phase 1 OTel spans contain no prompt or response content, session/user attributes, retry events,
+  resource attributes, or explicit sampling configuration; those are deferred to later phases.
+- OTel span correlation assumes a request's observer hooks run in the same async context. Fully
+  consumed completion and streaming calls end spans; abandoning a stream before its terminal event
+  can leave its span open until later lifecycle support is added.
 - `ChatSession` memory and telemetry are in process only; persistence, concurrency control, and
   multi-participant conversation semantics are outside this provisional layer.
 - The normalized image part accepts URLs and data URLs; file loading is left to the application.
