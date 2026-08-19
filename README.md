@@ -100,9 +100,10 @@ for details.
 
 ## Complete and streaming calls
 
-The repository's [`example.py`](example.py) sends complete and streaming calls to OpenAI and
-exports one span for each finished logical call to the local Langfuse backend. After starting
-Langfuse and configuring the environment as described in the observability guide, run:
+The repository's [`example.py`](example.py) runs OpenAI and Anthropic completions as concurrent
+asyncio tasks and exports one span for each finished logical call to the local Langfuse backend.
+After starting Langfuse and configuring the environment as described in the observability guide,
+run:
 
 ```bash
 uv run --extra otel python example.py
@@ -111,6 +112,7 @@ uv run --extra otel python example.py
 The application owns OTel setup and shutdown; `ModelRuntime` receives only the observer:
 
 ```python
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
@@ -118,7 +120,9 @@ from model_runtime import ModelRuntime
 from model_runtime.observability import OTelTraceObserver
 
 
-tracer_provider = TracerProvider()
+tracer_provider = TracerProvider(
+    resource=Resource.create({"service.name": "my_application"}),
+)
 tracer_provider.add_span_processor(BatchSpanProcessor(langfuse_exporter))
 tracer = tracer_provider.get_tracer("my_application")
 runtime = ModelRuntime(

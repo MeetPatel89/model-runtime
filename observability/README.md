@@ -48,9 +48,9 @@ Start the stack and inspect its status:
 
 ```bash
 docker compose --env-file observability/.env \
-  -f observability/docker-compose.yml up -d
+  -f observability/compose.yaml up -d
 docker compose --env-file observability/.env \
-  -f observability/docker-compose.yml ps
+  -f observability/compose.yaml ps
 ```
 
 Open `http://localhost:3000`, create the first user, organization, and project,
@@ -91,18 +91,22 @@ uv sync --extra otel
 
 The executable [`example.py`](../example.py) loads provider settings from the
 root `.env` when present and Langfuse settings from `observability/.env`. It
-requires `OPENAI_API_KEY`, `OPENAI_MODEL`, `LANGFUSE_PUBLIC_KEY`, and
-`LANGFUSE_SECRET_KEY`; `LANGFUSE_BASE_URL` defaults to
-`http://localhost:3000`. Run it after the local stack is healthy:
+requires `OPENAI_API_KEY`, `OPENAI_MODEL`, `ANTHROPIC_API_KEY`,
+`ANTHROPIC_MODEL`, `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY`;
+`LANGFUSE_BASE_URL` defaults to `http://localhost:3000`. The two provider calls
+run as concurrent asyncio tasks under one parent span. Run it after the local
+stack is healthy:
 
 ```bash
 uv run --extra otel python example.py
 ```
 
-The application creates a `TracerProvider`, `BatchSpanProcessor`, and OTLP/HTTP
-exporter, then injects the provider's tracer into `OTelTraceObserver`. The
-library does not install or mutate a global tracer provider. The example sends
-traces to `/api/public/otel/v1/traces` using Basic auth and the
+The application creates a `TracerProvider` with resource `service.name`
+`model-runtime-example`, a `BatchSpanProcessor`, and an OTLP/HTTP exporter,
+then injects the provider's tracer into `OTelTraceObserver`. The library does
+not install or mutate a global tracer provider. Without an explicit
+`service.name`, the SDK reports `unknown_service`. The example sends traces to
+`/api/public/otel/v1/traces` using Basic auth and the
 `x-langfuse-ingestion-version: 4` header, and shuts its provider down so the
 batch processor flushes before process exit.
 
@@ -139,14 +143,14 @@ project. If it cannot connect, check `docker compose ... ps` and inspect logs:
 
 ```bash
 docker compose --env-file observability/.env \
-  -f observability/docker-compose.yml logs --tail=100 langfuse-web langfuse-worker
+  -f observability/compose.yaml logs --tail=100 langfuse-web langfuse-worker
 ```
 
 Stop containers while retaining data:
 
 ```bash
 docker compose --env-file observability/.env \
-  -f observability/docker-compose.yml down
+  -f observability/compose.yaml down
 ```
 
 Adding `--volumes` to `down` permanently deletes the local Langfuse databases

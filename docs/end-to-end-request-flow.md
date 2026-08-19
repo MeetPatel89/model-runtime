@@ -558,7 +558,7 @@ What stays identical for callers: `Message`, `ModelRequest`, `ModelResponse`,
 | Tracing hooks | `src/model_runtime/tracing.py` |
 | OpenAI stack | `src/model_runtime/providers/openai/` (`adapter`, `codec`, `transport`, `_types`, `errors`) |
 | Anthropic stack | `src/model_runtime/providers/anthropic/` (same layout) |
-| Runnable OpenAI sample | `example.py` |
+| Runnable OpenAI and Anthropic sample | `example.py` |
 | Contract tests | `tests/test_runtime.py`, `tests/test_provider_adapter.py`, `tests/test_openai_adapter.py`, `tests/test_anthropic_adapter.py` |
 
 ---
