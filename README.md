@@ -33,7 +33,7 @@ auth token, and custom base URL can instead be passed to `AnthropicAdapter`.
 ### Local Langfuse backend
 
 [`observability/README.md`](observability/README.md) contains the local Langfuse v4 Docker Compose
-stack, a standalone OTLP ingestion smoke test, and the Phase 1 runtime instrumentation guide.
+stack, a standalone OTLP ingestion smoke test, and the Phase 2 runtime instrumentation guide.
 OpenTelemetry remains optional:
 
 ```bash
@@ -42,7 +42,8 @@ uv sync --extra otel
 
 Import `OTelTraceObserver` from `model_runtime.observability`, inject an application-owned OTel
 `Tracer`, and pass the observer to `ModelRuntime`. The base installation and `import model_runtime`
-do not require OpenTelemetry.
+do not require OpenTelemetry. Phase 2 adds app-parent/runtime-child trace hierarchies, opt-in text
+content, retry events with normalized errors, resource version metadata, and parent-based sampling.
 
 ### Optional aiohttp transport
 
@@ -101,9 +102,9 @@ for details.
 ## Complete and streaming calls
 
 The repository's [`example.py`](example.py) runs OpenAI and Anthropic completions as concurrent
-asyncio tasks and exports one span for each finished logical call to the local Langfuse backend.
-After starting Langfuse and configuring the environment as described in the observability guide,
-run:
+asyncio tasks and exports one span for each finished logical call beneath one current application
+span. After starting Langfuse and configuring the environment as described in the observability
+guide, run:
 
 ```bash
 uv run --extra otel python example.py
@@ -139,6 +140,22 @@ finally:
 Here `router`, `request`, and `langfuse_exporter` are application values; the executable example
 shows their complete construction, including Basic-auth OTLP/HTTP exporter configuration.
 `provider_name` is explicit because a provider cannot be inferred reliably from its model ID.
+The executable example also sets `service.version` to the installed `model-runtime` version.
+`TracerProvider` reads `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG`; the supplied
+`.env.example` uses `parentbased_traceidratio` at `1.0`, preserving the full parent/child trace.
+
+Request and response text remains private by default. Set
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`, or pass
+`capture_message_content=True` to `OTelTraceObserver`, only after reviewing the destination and
+retention policy. An explicit constructor boolean overrides the environment. Enabled capture emits
+GenAI message JSON for normalized text only; image data/URLs, tool arguments, tool definitions,
+and raw provider payloads are omitted. See the [observability guide](observability/README.md) for
+the exact attributes, retry-event fields, sampling controls, and privacy limitations.
+
+The dependency-free `RetryTraceObserver` protocol is a supplementary capability. `ModelRuntime`
+calls its `on_retry` hook with the normalized error, failed attempt, and selected delay when an
+observer implements it. Existing `TraceObserver` implementations without that method continue to
+work.
 
 `runtime.total_usage` and `runtime.usage_by_model` contain process-local totals for successfully
 completed calls and streams. A stream is counted after its final `StreamEnd` is received.
@@ -466,9 +483,13 @@ discarded; `clear_history()` does not clear its generation log. OpenAI Responses
 provider by default; pass `OpenAIProviderOptions(store=False)` when provider-side storage is not
 desired. An injected `TraceObserver` controls its own data handling. `OTelTraceObserver` records
 model identifiers, selected request parameters, finish reasons, token usage, latency, and terminal
-exception details, but does not record prompt or response content. Its application-owned exporter
-determines where those spans are transmitted and retained. Anthropic documents the standard
-Messages API's current retention behavior in its [API data retention
+exception details. It also records retry events with the public error taxonomy. Prompt and response
+text is excluded by default; explicit content capture adds normalized text to
+`gen_ai.input.messages` and `gen_ai.output.messages`. This includes textual tool-result messages,
+but excludes image payloads, tool-call arguments, and tool definitions. There is no built-in
+content redaction or truncation. Its application-owned exporter determines where those spans are
+transmitted and retained. Anthropic documents the standard Messages API's current retention
+behavior in its [API data retention
 guide](https://platform.claude.com/docs/en/manage-claude/api-and-data-retention); provider-native
 tools can have different policies. `ModelResponse.raw`, error details, and tracing callbacks may
 contain provider payloads, so applications should apply their own redaction and retention policies.
@@ -512,8 +533,13 @@ AGENTS.md                              Codex-native repository instructions
   separate developer role. Mid-conversation system messages remain subject to model support and
   Anthropic's placement rules.
 - Usage totals are in memory and reset when the process exits.
-- Phase 1 OTel spans contain no prompt or response content, session/user attributes, retry events,
-  resource attributes, or explicit sampling configuration; those are deferred to later phases.
+- Phase 2 OTel spans do not add Langfuse-native session/user/cost attributes, evaluation, an OTel
+  Collector, or production tail sampling; those remain later phases.
+- Opt-in OTel content capture includes normalized text without redaction or truncation and omits
+  normalized images, tool-call structures, tool definitions, and provider-native payloads. Textual
+  tool-result messages are included because they are normalized text.
+- OTel resources, processors, exporters, parent operations, and sampler configuration remain
+  application-owned; the example demonstrates one concrete configuration.
 - OTel span correlation assumes a request's observer hooks run in the same async context. Fully
   consumed completion and streaming calls end spans; abandoning a stream before its terminal event
   can leave its span open until later lifecycle support is added.

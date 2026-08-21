@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from .errors import ModelRuntimeError
 from .types import ModelRequest, ModelResponse, Usage
@@ -42,6 +42,26 @@ class TraceObserver(Protocol):
         ...
 
 
+@runtime_checkable
+class RetryTraceObserver(Protocol):
+    """Optional observer capability for retries of a logical request.
+
+    Keeping retry notifications in a supplementary protocol preserves
+    compatibility with existing :class:`TraceObserver` implementations. The
+    runtime checks for this capability before reporting a retry.
+    """
+
+    def on_retry(
+        self,
+        model_id: str,
+        error: ModelRuntimeError,
+        attempt: int,
+        delay_seconds: float,
+    ) -> ObserverResult:
+        """Observe a failed attempt before the next attempt is delayed."""
+        ...
+
+
 class NoOpTraceObserver:
     """Default observer that deliberately does nothing."""
 
@@ -66,4 +86,14 @@ class NoOpTraceObserver:
         latency_seconds: float,
     ) -> None:
         """Ignore a terminal request failure."""
+        return None
+
+    def on_retry(
+        self,
+        model_id: str,
+        error: ModelRuntimeError,
+        attempt: int,
+        delay_seconds: float,
+    ) -> None:
+        """Ignore a retryable failed attempt."""
         return None

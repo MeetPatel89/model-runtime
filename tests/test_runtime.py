@@ -73,6 +73,7 @@ class Recorder:
         self.requests: list[str] = []
         self.responses: list[tuple[str, Usage]] = []
         self.errors: list[tuple[str, ModelRuntimeError]] = []
+        self.retries: list[tuple[str, ModelRuntimeError, int, float]] = []
 
     def on_request(self, model_id: str, request: ModelRequest) -> None:
         """Record the requested model ID."""
@@ -94,6 +95,46 @@ class Recorder:
     ) -> None:
         """Record a terminal error for its model ID."""
         self.errors.append((model_id, error))
+
+    def on_retry(
+        self,
+        model_id: str,
+        error: ModelRuntimeError,
+        attempt: int,
+        delay_seconds: float,
+    ) -> None:
+        """Record a retryable failed attempt and its selected delay."""
+        self.retries.append((model_id, error, attempt, delay_seconds))
+
+
+class LegacyRecorder:
+    """Trace observer implementing the original lifecycle without retries."""
+
+    def __init__(self) -> None:
+        self.response_count = 0
+
+    def on_request(self, model_id: str, request: ModelRequest) -> None:
+        """Accept the request notification."""
+        return None
+
+    def on_response(
+        self,
+        model_id: str,
+        response: ModelResponse,
+        latency_seconds: float,
+        usage: Usage,
+    ) -> None:
+        """Count a successful response."""
+        self.response_count += 1
+
+    def on_error(
+        self,
+        model_id: str,
+        error: ModelRuntimeError,
+        latency_seconds: float,
+    ) -> None:
+        """Accept a terminal error notification."""
+        return None
 
 
 def make_runtime(
@@ -138,8 +179,30 @@ async def test_complete_retries_traces_and_accounts_for_usage() -> None:
     assert observer.requests == ["provider-model"]
     assert observer.responses == [("provider-model", Usage(2, 3, 1))]
     assert observer.errors == []
+    assert len(observer.retries) == 1
+    retry_model, retry_error, retry_attempt, retry_delay = observer.retries[0]
+    assert retry_model == "provider-model"
+    assert isinstance(retry_error, RateLimitError)
+    assert retry_attempt == 1
+    assert retry_delay == 0
     assert runtime.total_usage == Usage(2, 3, 1)
     assert runtime.usage_for("provider-model") == Usage(2, 3, 1)
+
+
+@pytest.mark.asyncio
+async def test_retry_notifications_are_backward_compatible() -> None:
+    """Observers without the optional retry capability continue to work."""
+    observer = LegacyRecorder()
+    runtime = make_runtime(
+        FakeModel([RateLimitError("retry", retry_after=0), response()]),
+        retry_policy=RetryPolicy(max_attempts=2, jitter=0),
+        observer=observer,
+    )
+
+    result = await runtime.complete("chat", ModelRequest.from_text("hello"))
+
+    assert result.text == "ok"
+    assert observer.response_count == 1
 
 
 @pytest.mark.asyncio
@@ -194,9 +257,11 @@ class RetryingStreamModel:
 async def test_stream_retries_only_before_emitting_and_records_final_usage() -> None:
     """Streams retry before a delta and record final usage."""
     model = RetryingStreamModel()
+    observer = Recorder()
     runtime = make_runtime(
         model,
         retry_policy=RetryPolicy(max_attempts=2, jitter=0),
+        observer=observer,
     )
 
     events = [
@@ -207,6 +272,8 @@ async def test_stream_retries_only_before_emitting_and_records_final_usage() -> 
     assert events[0] == TextDelta("done")
     assert isinstance(events[-1], StreamEnd)
     assert runtime.total_usage == Usage(4, 1)
+    assert len(observer.retries) == 1
+    assert observer.retries[0][2:] == (1, 0)
 
 
 @pytest.mark.asyncio

@@ -31,7 +31,7 @@ from .retry import RetryPolicy
 from .router import ModelRoute, ModelRouter, RouteSelector
 from .runtime import ModelRuntime
 from .session import ChatSession, GenerationRecord, run_sync
-from .tracing import NoOpTraceObserver, TraceObserver
+from .tracing import NoOpTraceObserver, RetryTraceObserver, TraceObserver
 from .types import (
     ContentPart,
     FinishReason,
@@ -90,6 +90,7 @@ __all__ = [
     "ProviderTransport",
     "RateLimitError",
     "RequestTimeout",
+    "RetryTraceObserver",
     "RetryPolicy",
     "RouteSelector",
     "StreamEnd",

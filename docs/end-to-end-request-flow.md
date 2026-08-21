@@ -134,7 +134,9 @@ print(response.finish_reason)
    through; anything else becomes non-retryable `ProviderUnavailableError`.
    `RetryPolicy.should_retry` checks `error.retryable` and attempt count
    (default max 3). Delay is exponential backoff with jitter, or the provider's
-   `Retry-After` when present.
+   `Retry-After` when present. If the observer implements the supplementary
+   `RetryTraceObserver` protocol, `on_retry` receives the normalized error,
+   failed one-based attempt, and selected delay before the runtime sleeps.
 
 5. **Record success** — usage is added to `runtime.total_usage` and
    `runtime.usage_by_model[model_id]`. `observer.on_response` fires. The
@@ -519,7 +521,7 @@ SDK exception
   → ProviderErrorMapper.translate  (status / type / headers)
   → ModelRuntimeError (retryable flag set)
   → RetryPolicy.should_retry / delay_for
-  → retry or observer.on_error + raise
+  → optional observer.on_retry + retry, or observer.on_error + raise
 ```
 
 Default policy: up to 3 attempts, exponential backoff (0.5s → capped at 8s) with

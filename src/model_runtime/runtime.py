@@ -16,7 +16,12 @@ from .errors import (
 )
 from .retry import RetryPolicy
 from .router import ModelRoute, ModelRouter
-from .tracing import NoOpTraceObserver, ObserverResult, TraceObserver
+from .tracing import (
+    NoOpTraceObserver,
+    ObserverResult,
+    RetryTraceObserver,
+    TraceObserver,
+)
 from .types import (
     ModelRequest,
     ModelResponse,
@@ -106,7 +111,9 @@ class ModelRuntime:
             except Exception as exc:
                 error = self._normalize_error(exc, route.model_id)
                 if self.retry_policy.should_retry(error, attempt):
-                    await self._sleep(self.retry_policy.delay_for(attempt, error))
+                    delay = self.retry_policy.delay_for(attempt, error)
+                    await self._observe_retry(route.model_id, error, attempt, delay)
+                    await self._sleep(delay)
                     continue
                 await self._observe(
                     self.observer.on_error,
@@ -185,7 +192,9 @@ class ModelRuntime:
                 )
                 if can_retry:
                     await self._close(iterator)
-                    await self._sleep(self.retry_policy.delay_for(attempt, error))
+                    delay = self.retry_policy.delay_for(attempt, error)
+                    await self._observe_retry(route.model_id, error, attempt, delay)
+                    await self._sleep(delay)
                     continue
                 await self._observe(
                     self.observer.on_error,
@@ -250,6 +259,23 @@ class ModelRuntime:
         except Exception:  # noqa: BLE001 - observers are an isolated extension point
             # Instrumentation must not turn a successful provider call into a failure.
             return
+
+    async def _observe_retry(
+        self,
+        model_id: str,
+        error: ModelRuntimeError,
+        attempt: int,
+        delay_seconds: float,
+    ) -> None:
+        if not isinstance(self.observer, RetryTraceObserver):
+            return
+        await self._observe(
+            self.observer.on_retry,
+            model_id,
+            error,
+            attempt,
+            delay_seconds,
+        )
 
     def _record_usage(self, model_id: str, usage: Usage) -> None:
         self._total_usage = self._total_usage + usage

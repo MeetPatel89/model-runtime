@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   component guide, and standalone direct-OTLP ingestion smoke test.
 - Add optional OpenTelemetry instrumentation with GenAI semantic-convention
   attributes, direct Langfuse export in the example, and network-free tests.
+- Add Phase 2 OpenTelemetry hierarchy propagation, opt-in text content capture,
+  normalized retry events and error taxonomy, service name/version resource
+  metadata, and parent-based trace sampling configuration.
 
 ### Fixed
 

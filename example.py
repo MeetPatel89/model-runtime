@@ -3,6 +3,7 @@
 import asyncio
 import os
 from base64 import b64encode
+from importlib.metadata import version
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -45,11 +46,16 @@ async def main() -> None:
     load_dotenv(Path(__file__).with_name("observability") / ".env")
 
     tracer_provider = TracerProvider(
-        resource=Resource.create({"service.name": "model-runtime-example"})
+        resource=Resource.create(
+            {
+                "service.name": "model-runtime-example",
+                "service.version": version("model-runtime"),
+            }
+        )
     )
     try:
         tracer_provider.add_span_processor(BatchSpanProcessor(_langfuse_exporter()))
-        tracer = tracer_provider.get_tracer("model_runtime.example")
+        tracer = tracer_provider.get_tracer("model_runtime.random.example")
 
         router = (
             ModelRouter()
