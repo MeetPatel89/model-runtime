@@ -33,17 +33,25 @@ auth token, and custom base URL can instead be passed to `AnthropicAdapter`.
 ### Local Langfuse backend
 
 [`observability/README.md`](observability/README.md) contains the local Langfuse v4 Docker Compose
-stack, a standalone OTLP ingestion smoke test, and the Phase 2 runtime instrumentation guide.
-OpenTelemetry remains optional:
+stack, a standalone OTLP ingestion smoke test, and the Phase 3 raw-OTel and Langfuse-SDK guides.
+Both integrations remain optional:
 
 ```bash
 uv sync --extra otel
+uv sync --extra langfuse
 ```
 
 Import `OTelTraceObserver` from `model_runtime.observability`, inject an application-owned OTel
 `Tracer`, and pass the observer to `ModelRuntime`. The base installation and `import model_runtime`
-do not require OpenTelemetry. Phase 2 adds app-parent/runtime-child trace hierarchies, opt-in text
-content, retry events with normalized errors, resource version metadata, and parent-based sampling.
+do not require OpenTelemetry. The raw path adds app-parent/runtime-child trace hierarchies, opt-in
+text content, retry events with normalized errors, resource version metadata, parent-based
+sampling, and Langfuse session/user/tag/metadata dimensions. The separate Langfuse SDK example
+uses native observations, attribute propagation, and usage-based cost inference at the app layer.
+Run that path with:
+
+```bash
+uv run --extra langfuse python observability/langfuse_sdk_example.py
+```
 
 ### Optional aiohttp transport
 
@@ -103,8 +111,9 @@ for details.
 
 The repository's [`example.py`](example.py) runs OpenAI and Anthropic completions as concurrent
 asyncio tasks and exports one span for each finished logical call beneath one current application
-span. After starting Langfuse and configuring the environment as described in the observability
-guide, run:
+span. It copies one `LangfuseTraceAttributes` value onto the parent and both generation spans so
+session, user, tags, and trace metadata remain queryable across the trace. After starting Langfuse
+and configuring the environment as described in the observability guide, run:
 
 ```bash
 uv run --extra otel python example.py
@@ -118,7 +127,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from model_runtime import ModelRuntime
-from model_runtime.observability import OTelTraceObserver
+from model_runtime.observability import LangfuseTraceAttributes, OTelTraceObserver
 
 
 tracer_provider = TracerProvider(
@@ -128,7 +137,16 @@ tracer_provider.add_span_processor(BatchSpanProcessor(langfuse_exporter))
 tracer = tracer_provider.get_tracer("my_application")
 runtime = ModelRuntime(
     router,
-    observer=OTelTraceObserver(tracer, provider_name="openai"),
+    observer=OTelTraceObserver(
+        tracer,
+        provider_name="openai",
+        langfuse_trace=LangfuseTraceAttributes(
+            session_id="session-123",
+            user_id="user-456",
+            tags=("chat",),
+            metadata={"approach": "raw-otel"},
+        ),
+    ),
 )
 
 try:
@@ -143,6 +161,8 @@ shows their complete construction, including Basic-auth OTLP/HTTP exporter confi
 The executable example also sets `service.version` to the installed `model-runtime` version.
 `TracerProvider` reads `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG`; the supplied
 `.env.example` uses `parentbased_traceidratio` at `1.0`, preserving the full parent/child trace.
+The application must put the same `LangfuseTraceAttributes.as_otel_attributes()` values on its
+parent span when those dimensions should be filterable on every observation.
 
 Request and response text remains private by default. Set
 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`, or pass
@@ -150,7 +170,8 @@ Request and response text remains private by default. Set
 retention policy. An explicit constructor boolean overrides the environment. Enabled capture emits
 GenAI message JSON for normalized text only; image data/URLs, tool arguments, tool definitions,
 and raw provider payloads are omitted. See the [observability guide](observability/README.md) for
-the exact attributes, retry-event fields, sampling controls, and privacy limitations.
+the exact attributes, SDK-native alternative, cost behavior, sampling controls, and privacy
+limitations.
 
 The dependency-free `RetryTraceObserver` protocol is a supplementary capability. `ModelRuntime`
 calls its `on_retry` hook with the normalized error, failed attempt, and selected delay when an
@@ -506,7 +527,7 @@ src/model_runtime/providers/errors.py  shared provider error normalization
 src/model_runtime/providers/anthropic/ Anthropic adapter, transport, codec, stream, and errors
 src/model_runtime/providers/openai/    OpenAI adapter, transport, codec, stream, and errors
 docs/end-to-end-request-flow.md        detailed OpenAI and Anthropic request flow walkthrough
-observability/                         local Langfuse stack, OTLP smoke test, and usage guide
+observability/                         local Langfuse stack, raw/SDK examples, smoke test, and guide
 tests/                                 network-free runtime and provider contract tests
 CHANGELOG.md                           notable changes organized by release
 .github/workflows/ci.yml               locked quality and distribution validation
@@ -533,8 +554,8 @@ AGENTS.md                              Codex-native repository instructions
   separate developer role. Mid-conversation system messages remain subject to model support and
   Anthropic's placement rules.
 - Usage totals are in memory and reset when the process exits.
-- Phase 2 OTel spans do not add Langfuse-native session/user/cost attributes, evaluation, an OTel
-  Collector, or production tail sampling; those remain later phases.
+- Phase 3 adds Langfuse session/user dimensions and recognized-model cost inference. Evaluation,
+  an OTel Collector, and production tail sampling remain later phases.
 - Opt-in OTel content capture includes normalized text without redaction or truncation and omits
   normalized images, tool-call structures, tool definitions, and provider-native payloads. Textual
   tool-result messages are included because they are normalized text.

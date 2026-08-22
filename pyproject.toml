@@ -19,6 +19,9 @@ otel = [
     "opentelemetry-exporter-otlp-proto-http>=1.44.0,<2.0.0",
     "opentelemetry-sdk>=1.44.0,<2.0.0",
 ]
+langfuse = [
+    "langfuse>=4.7.0,<5.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -40,7 +43,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.mypy]
-files = ["src", "tests", "example.py"]
+files = ["src", "tests", "example.py", "observability/langfuse_sdk_example.py"]
 python_version = "3.14"
 plugins = ["pydantic.mypy"]
 strict = true
@@ -53,7 +56,7 @@ init_typed = false
 warn_required_dynamic_aliases = true
 
 [tool.ty.src]
-include = ["src", "tests", "example.py"]
+include = ["src", "tests", "example.py", "observability/langfuse_sdk_example.py"]
 
 [tool.ty.rules]
 missing-type-argument = "error"

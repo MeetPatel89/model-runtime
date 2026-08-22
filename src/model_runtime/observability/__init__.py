@@ -1,7 +1,7 @@
 """Optional observability integrations for model-runtime."""
 
 try:
-    from .otel import OTelTraceObserver
+    from .otel import LangfuseTraceAttributes, OTelTraceObserver
 except ModuleNotFoundError as exc:
     if exc.name is None or not exc.name.startswith("opentelemetry"):
         raise
@@ -9,4 +9,4 @@ except ModuleNotFoundError as exc:
         "OpenTelemetry support is not installed; install model-runtime[otel]"
     ) from exc
 
-__all__ = ["OTelTraceObserver"]
+__all__ = ["LangfuseTraceAttributes", "OTelTraceObserver"]

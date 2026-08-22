@@ -22,7 +22,7 @@ from model_runtime import (
     OpenAIAdapter,
     OpenAIProviderOptions,
 )
-from model_runtime.observability import OTelTraceObserver
+from model_runtime.observability import LangfuseTraceAttributes, OTelTraceObserver
 
 
 def _langfuse_exporter() -> OTLPSpanExporter:
@@ -55,7 +55,13 @@ async def main() -> None:
     )
     try:
         tracer_provider.add_span_processor(BatchSpanProcessor(_langfuse_exporter()))
-        tracer = tracer_provider.get_tracer("model_runtime.random.example")
+        tracer = tracer_provider.get_tracer("model_runtime.example")
+        langfuse_trace = LangfuseTraceAttributes(
+            session_id="model-runtime-phase-3",
+            user_id="example-user",
+            tags=("model-runtime", "raw-otel"),
+            metadata={"approach": "raw-otel"},
+        )
 
         router = (
             ModelRouter()
@@ -64,15 +70,27 @@ async def main() -> None:
         )
         openai_runtime = ModelRuntime(
             router,
-            observer=OTelTraceObserver(tracer, provider_name="openai"),
+            observer=OTelTraceObserver(
+                tracer,
+                provider_name="openai",
+                langfuse_trace=langfuse_trace,
+            ),
         )
         anthropic_runtime = ModelRuntime(
             router,
-            observer=OTelTraceObserver(tracer, provider_name="anthropic"),
+            observer=OTelTraceObserver(
+                tracer,
+                provider_name="anthropic",
+                langfuse_trace=langfuse_trace,
+            ),
         )
         messages = (
             Message.system("Answer clearly and briefly."),
-            Message.user("What are great textbooks for Linear Algebra?"),
+            Message.user(
+                "What are great textbooks for Linear Algebra? "
+                "I am currently reading Matrix Analysis "
+                "and Applied Linear Algebra by Carl Meyer."
+            ),
         )
         openai_request = ModelRequest(
             messages=messages,
@@ -87,7 +105,12 @@ async def main() -> None:
             provider_options=AnthropicProviderOptions(),
         )
 
-        with tracer.start_as_current_span("example concurrent chat"):
+        parent_attributes = langfuse_trace.as_otel_attributes()
+        parent_attributes["langfuse.observation.type"] = "span"
+        with tracer.start_as_current_span(
+            "example concurrent chat",
+            attributes=parent_attributes,
+        ):
             async with asyncio.TaskGroup() as tasks:
                 openai_task = tasks.create_task(
                     openai_runtime.complete("gpt", openai_request)

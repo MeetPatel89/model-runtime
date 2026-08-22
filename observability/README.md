@@ -1,15 +1,15 @@
-# Local Langfuse backend and Phase 2 OTel instrumentation
+# Local Langfuse backend and Phase 3 observability
 
-This directory implements Phases 0 through 2 of the observability plan: a local
-Langfuse backend, one standalone OTLP ingestion smoke test, and optional rich
-OpenTelemetry instrumentation for `ModelRuntime`. Text content capture is
-privacy-off by default. This phase does not run evaluations, add Langfuse-native
-session/user attributes, or introduce an OpenTelemetry Collector.
+This directory implements Phases 0 through 3 of the observability plan: a local
+Langfuse backend, one standalone OTLP ingestion smoke test, optional rich
+OpenTelemetry instrumentation for `ModelRuntime`, and an app-layer Langfuse SDK
+example. Text content capture is privacy-off by default. This phase does not run
+evaluations or introduce an OpenTelemetry Collector.
 
 The original plan was written for Langfuse v3. The official self-hosting stack
-now uses Langfuse v4, so this compose file follows the current v4 images and
-sends the v4 ingestion header. The OTLP/HTTP endpoint remains
-`/api/public/otel`.
+and Python SDK now use Langfuse v4, so the implementation follows the current v4
+images and OTel-native Python SDK and sends the v4 ingestion header. The
+OTLP/HTTP endpoint remains `/api/public/otel`.
 
 ## What runs
 
@@ -119,6 +119,22 @@ reports `unknown_service`. The example sends traces to
 `x-langfuse-ingestion-version: 4` header, and shuts its provider down so the
 batch processor flushes before process exit.
 
+The raw example also creates one `LangfuseTraceAttributes` value and applies it
+to the parent span and both runtime observers. The resulting spans all carry the
+same `langfuse.session.id`, `langfuse.user.id`, `langfuse.trace.tags`, and
+`langfuse.trace.metadata.approach` values. The parent is explicitly a
+`langfuse.observation.type=span`; runtime requests are explicitly
+`langfuse.observation.type=generation`. Copying trace dimensions to every span
+is intentional: Langfuse v4 filters and aggregates observation rows directly.
+
+Applications should replace the fixed documentation IDs with authenticated
+application values. `LangfuseTraceAttributes` copies its tags and metadata,
+exposes them immutably, and validates Langfuse's non-empty 200-character limit;
+session IDs, user IDs, and metadata keys must also be US-ASCII. It accepts only
+string metadata values so raw OTel attributes remain predictable. It is opt-in;
+omitting `langfuse_trace` leaves the observer's vendor-neutral Phase 2 output
+unchanged.
+
 Each completed runtime call produces one client span named `chat <model-id>`.
 The span covers the runtime's full logical call, including every retry, and
 records these values:
@@ -210,6 +226,57 @@ for reduced ingestion and storage volume.
 The observer is imported from `model_runtime.observability`. Importing the base
 `model_runtime` package still works without the `otel` extra; importing its OTel
 integration without the extra raises an installation hint.
+
+## Trace with the Langfuse Python SDK
+
+Install the current OTel-native Langfuse Python SDK through the separate extra:
+
+```bash
+uv sync --extra langfuse
+uv run --extra langfuse python observability/langfuse_sdk_example.py
+```
+
+[`langfuse_sdk_example.py`](langfuse_sdk_example.py) uses the same providers and
+concurrent request shape as the raw example, but keeps all instrumentation at
+the app layer. An explicitly constructed `Langfuse` client installs its
+Langfuse span processor and exporter. The app creates a native parent with
+`start_as_current_observation(as_type="span")`, uses `propagate_attributes` for
+the session, user, tags, trace name, and metadata, then wraps each runtime call
+in `start_as_current_observation(as_type="generation")`. OTel context carries
+the parent and propagated values through the `TaskGroup`.
+
+Each generation reports its resolved model, model parameters, and normalized
+usage. `ModelRuntime.Usage.input_tokens` includes cached input, while Langfuse
+flat usage buckets must be mutually exclusive, so the example subtracts
+`cached_tokens` from `input` and reports the cache count separately as
+`cache_read_input_tokens`. It deliberately omits `cost_details`: Langfuse infers
+cost from the model ID and these usage buckets when the project has a matching
+model definition. Add a project model definition for an unrecognized or custom
+model; do not invent prices in application code.
+
+The SDK example honors the same
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` privacy switch. With
+the default `false`, generation input and output are absent while usage and cost
+tracking continue to work. `langfuse.shutdown()` flushes pending observations in
+this short-lived process.
+
+## Raw OTel compared with the Langfuse SDK
+
+| Concern | Raw OTel (`example.py`) | Langfuse SDK example |
+| --- | --- | --- |
+| Dependency | `model-runtime[otel]` | `model-runtime[langfuse]` |
+| Export setup | App constructs OTLP exporter, processor, and provider | Client installs a Langfuse span processor/exporter |
+| Runtime lifecycle | `OTelTraceObserver` automatically covers retries, errors, streams, latency, and usage | App explicitly opens and updates each native generation |
+| Session/user/tags/metadata | App copies `LangfuseTraceAttributes` onto every relevant span | `propagate_attributes` updates the current observation and async descendants |
+| Cost data | Langfuse maps GenAI model/usage attributes and infers recognized-model cost | App supplies exclusive `usage_details`; Langfuse infers recognized-model cost |
+| Portability | GenAI fields remain useful in non-Langfuse OTel backends; vendor fields are isolated | Richer Langfuse API with less attribute/export plumbing |
+
+The raw observer is the stronger library boundary because callers get consistent
+runtime semantics without depending on Langfuse. The SDK is more expressive at
+the application boundary, where sessions, authenticated users, workflow names,
+and business metadata are actually known. Do not run both examples' generation
+instrumentation around the same call: that would create duplicate nested
+generation observations rather than a useful side-by-side comparison.
 
 If export returns `401`, confirm the public and secret keys belong to the same
 project. If it cannot connect, check `docker compose ... ps` and inspect logs:

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from json import dumps
 from os import getenv
+from types import MappingProxyType
 
 from opentelemetry.context import Context, attach, detach
 from opentelemetry.trace import (
@@ -22,6 +24,84 @@ from ..errors import ModelRuntimeError
 from ..types import Message, ModelRequest, ModelResponse, TextPart, Usage
 
 _CAPTURE_MESSAGE_CONTENT_ENV = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+_LANGFUSE_ATTRIBUTE_MAX_LENGTH = 200
+
+
+@dataclass(frozen=True, slots=True)
+class LangfuseTraceAttributes:
+    """Trace-level Langfuse dimensions copied onto each runtime span.
+
+    Langfuse queries observations directly, so session, user, tag, and trace
+    metadata values must be present on every span where they should be
+    filterable. The value object makes that propagation explicit while keeping
+    request-specific context outside :class:`ModelRuntime`.
+    """
+
+    session_id: str | None = None
+    user_id: str | None = None
+    tags: Sequence[str] = ()
+    metadata: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Normalize collections and reject values Langfuse would discard."""
+        self._validate_optional_identifier("session_id", self.session_id)
+        self._validate_optional_identifier("user_id", self.user_id)
+
+        if isinstance(self.tags, str):
+            raise TypeError("tags must be a sequence of strings")
+        normalized_tags = tuple(self.tags)
+        for tag in normalized_tags:
+            self._validate_text("tag", tag)
+
+        if not isinstance(self.metadata, Mapping):
+            raise TypeError("metadata must be a mapping of strings to strings")
+        normalized_metadata = dict(self.metadata)
+        for key, value in normalized_metadata.items():
+            self._validate_text("metadata key", key, ascii_only=True)
+            self._validate_text(f"metadata[{key!r}]", value)
+
+        object.__setattr__(self, "tags", normalized_tags)
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(normalized_metadata),
+        )
+
+    def as_otel_attributes(self) -> dict[str, AttributeValue]:
+        """Return Langfuse's raw-OTel trace attributes."""
+        attributes: dict[str, AttributeValue] = {}
+        if self.session_id is not None:
+            attributes["langfuse.session.id"] = self.session_id
+        if self.user_id is not None:
+            attributes["langfuse.user.id"] = self.user_id
+        if self.tags:
+            attributes["langfuse.trace.tags"] = tuple(self.tags)
+        attributes.update(
+            {
+                f"langfuse.trace.metadata.{key}": value
+                for key, value in self.metadata.items()
+            }
+        )
+        return attributes
+
+    @staticmethod
+    def _validate_optional_identifier(name: str, value: str | None) -> None:
+        if value is not None:
+            LangfuseTraceAttributes._validate_text(name, value, ascii_only=True)
+
+    @staticmethod
+    def _validate_text(name: str, value: str, *, ascii_only: bool = False) -> None:
+        if not isinstance(value, str):
+            raise TypeError(f"{name} must be a string")
+        if not value:
+            raise ValueError(f"{name} must not be empty")
+        if ascii_only and not value.isascii():
+            raise ValueError(f"{name} must contain only US-ASCII characters")
+        if len(value) > _LANGFUSE_ATTRIBUTE_MAX_LENGTH:
+            raise ValueError(
+                f"{name} must contain at most "
+                f"{_LANGFUSE_ATTRIBUTE_MAX_LENGTH} characters"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +127,7 @@ class OTelTraceObserver:
         *,
         provider_name: str,
         capture_message_content: bool | None = None,
+        langfuse_trace: LangfuseTraceAttributes | None = None,
     ) -> None:
         if not provider_name.strip():
             raise ValueError("provider_name must not be blank")
@@ -61,6 +142,11 @@ class OTelTraceObserver:
             if capture_message_content is None
             else capture_message_content
         )
+        if langfuse_trace is not None and not isinstance(
+            langfuse_trace, LangfuseTraceAttributes
+        ):
+            raise TypeError("langfuse_trace must be LangfuseTraceAttributes or None")
+        self._langfuse_trace = langfuse_trace
         self._active_spans: ContextVar[tuple[_ActiveSpan, ...]] = ContextVar(
             "model_runtime_otel_active_spans", default=()
         )
@@ -72,6 +158,9 @@ class OTelTraceObserver:
             "gen_ai.provider.name": self._provider_name,
             "gen_ai.request.model": model_id,
         }
+        if self._langfuse_trace is not None:
+            attributes.update(self._langfuse_trace.as_otel_attributes())
+            attributes["langfuse.observation.type"] = "generation"
         if request.temperature is not None:
             attributes["gen_ai.request.temperature"] = request.temperature
         if request.max_output_tokens is not None:

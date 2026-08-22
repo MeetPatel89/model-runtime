@@ -42,7 +42,10 @@ from model_runtime import (  # noqa: E402
     TextPart,
     Usage,
 )
-from model_runtime.observability import OTelTraceObserver  # noqa: E402
+from model_runtime.observability import (  # noqa: E402
+    LangfuseTraceAttributes,
+    OTelTraceObserver,
+)
 
 
 class OutcomeModel:
@@ -233,6 +236,53 @@ async def test_content_capture_environment_and_constructor_precedence(
     assert spans["chat disabled"].attributes is not None
     assert "gen_ai.input.messages" in spans["chat enabled"].attributes
     assert "gen_ai.input.messages" not in spans["chat disabled"].attributes
+
+
+@pytest.mark.asyncio
+async def test_langfuse_trace_attributes_are_copied_to_generation_span(
+    otel: tuple[Tracer, InMemorySpanExporter],
+) -> None:
+    """Opted-in Langfuse dimensions remain queryable on the child observation."""
+    tracer, exporter = otel
+    observer = OTelTraceObserver(
+        tracer,
+        provider_name="openai",
+        langfuse_trace=LangfuseTraceAttributes(
+            session_id="session-123",
+            user_id="user-456",
+            tags=("example", "phase-3"),
+            metadata={"approach": "raw-otel", "tenant": "docs"},
+        ),
+    )
+    runtime = _runtime(OutcomeModel([_response()]), observer, iter((3.0, 3.1)))
+
+    await runtime.complete("chat", ModelRequest.from_text("hello"))
+
+    attributes = _only_span(exporter).attributes
+    assert attributes is not None
+    assert attributes["langfuse.observation.type"] == "generation"
+    assert attributes["langfuse.session.id"] == "session-123"
+    assert attributes["langfuse.user.id"] == "user-456"
+    assert attributes["langfuse.trace.tags"] == ("example", "phase-3")
+    assert attributes["langfuse.trace.metadata.approach"] == "raw-otel"
+    assert attributes["langfuse.trace.metadata.tenant"] == "docs"
+
+
+def test_langfuse_trace_attributes_are_immutable_and_validated() -> None:
+    """Langfuse context is copied and rejects values the backend would drop."""
+    metadata = {"tenant": "docs", "label": "café"}
+    context = LangfuseTraceAttributes(tags=["phase-3"], metadata=metadata)
+    metadata["tenant"] = "changed"
+
+    assert context.tags == ("phase-3",)
+    assert context.metadata["tenant"] == "docs"
+    assert context.metadata["label"] == "café"
+    with pytest.raises(TypeError):
+        context.metadata["new"] = "value"  # type: ignore[index]
+    with pytest.raises(ValueError, match="US-ASCII"):
+        LangfuseTraceAttributes(metadata={"ténant": "value"})
+    with pytest.raises(ValueError, match="at most 200"):
+        LangfuseTraceAttributes(session_id="s" * 201)
 
 
 @pytest.mark.asyncio
